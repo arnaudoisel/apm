@@ -579,6 +579,27 @@ target is present. Authoring rules:
   package (the legacy `bin_deploy` rule remains a deprecated alias).
   See the [policy schema](../../../../../docs/src/content/docs/reference/policy-schema.md#executables).
 
+## Local contract source (v0.1)
+
+A local `.contract.md` has YAML frontmatter and a nonempty Markdown body:
+optional fixed-file `needs`, one scalar regular-file `produces`, 1 to 8 named
+opaque shell strings in `verify`, and optionally one directly declared,
+already-installed self-contained skill in an `imports` list. Paths are relative to
+the invocation's `apm.yml` directory, not the contract directory.
+
+The **presence** of `run`, `budget`, or `sandbox` is unsupported, even null.
+No captures, output lists, globs, directories, structured verifiers, composition,
+transitive imports, companion resources, child invocation, or grants.
+`checks/**` supplies pre-generation checker resources; arbitrary shell
+dependencies are not fully traced. Exact Unicode/raw input and artifact bytes
+are retained; terminal escaping does not require ASCII-only content.
+
+Keep versions in `apm.yml`. Existing local lock identity plus observed skill
+bytes is not pinned/trusted provenance. Eligible Git imports use existing
+integrity checks. See the canonical [source and import reference](https://microsoft.github.io/apm/reference/cli/plan/#contract-source)
+and [commands](./commands.md#local-contracts-v01); this is not an additional
+install-time discovery layout.
+
 ## Canvas extensions (experimental, Copilot-only)
 
 Behind the `canvas` experimental flag (`apm experimental enable canvas`), a

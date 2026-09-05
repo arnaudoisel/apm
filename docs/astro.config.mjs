@@ -171,6 +171,7 @@ export default defineConfig({
 						{ label: 'Install packages', slug: 'consumer/install-packages' },
 						{ label: 'Manage dependencies', slug: 'consumer/manage-dependencies' },
 						{ label: 'Run scripts', slug: 'consumer/run-scripts' },
+						{ label: 'Run a contract', slug: 'consumer/run-contracts' },
 						{ label: 'Update and refresh', slug: 'consumer/update-and-refresh' },
 						{ label: 'Install MCP servers', slug: 'consumer/install-mcp-servers' },
 						{ label: 'Install LSP servers', slug: 'consumer/install-lsp-servers' },

@@ -217,6 +217,31 @@ descendants, are skipped.
 | `apm preview SCRIPT` | Preview script without running | `-p name=value` |
 | `apm list` | List available scripts | -- |
 
+## Local contracts (v0.1)
+
+```bash
+apm plan CONTRACT --on copilot [--model MODEL] [-v]
+apm run CONTRACT --on copilot [--model MODEL] --allow-advisory [-v]
+```
+
+`--on` selects local `.contract.md` mode. Without it, bare `start`, named scripts
+(even `.contract.md` names), and prompt fallback are unchanged. Contracts reject
+`--param`; `--model` and `--allow-advisory` require `--on`. No command-level
+`--json` flag.
+
+Plan performs local reads only: no inference, checks, install, remote fetch,
+update/version/MCP probe, execution workspace, or durable writes. Run initially requires
+macOS/Linux, ready Copilot, a positively no-policy local/no-remote project, and
+invocation-only `--allow-advisory` in both TTY and pipes. Native host execution
+is not isolated; consent cannot override policy. Never remove remotes to bypass
+eligibility.
+
+Artifacts stay under `.apm/runs/<id>/artifacts/`, not the original output path.
+Use the [run reference](https://microsoft.github.io/apm/reference/cli/run/#results-and-retained-files)
+for `VERIFIED` 0, `REJECTED` 20, `UNPROVEN` 21, and `HALTED` 22 precedence.
+See [contract authoring](./package-authoring.md#local-contract-source-v01) for
+the bounded source format.
+
 ## Security and audit
 
 | Command | Purpose | Key flags |

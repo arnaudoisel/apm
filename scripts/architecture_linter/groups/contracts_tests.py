@@ -8,6 +8,10 @@ trees live in sibling modules purely so no single check module outgrows the
 module size budget; they own no RULES of their own.
 """
 
-from scripts.architecture_linter.checks.contracts_test_taxonomy import COLLECTORS, RULES
+from scripts.architecture_linter.checks.contract_leaf_runtime import RULES as LEAF_RULES
+from scripts.architecture_linter.checks.contracts_test_taxonomy import COLLECTORS
+from scripts.architecture_linter.checks.contracts_test_taxonomy import RULES as EXISTING_RULES
+
+RULES = (*EXISTING_RULES, *LEAF_RULES)
 
 __all__ = ["COLLECTORS", "RULES"]
