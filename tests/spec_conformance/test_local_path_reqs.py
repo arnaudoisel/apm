@@ -205,17 +205,27 @@ def test_missing_user_anchor_does_not_use_other_scope_install(
 
 
 @pytest.mark.req("req-mf-016")
-@pytest.mark.parametrize("reference", ["../child", "../../../outside"], ids=["sibling", "escape"])
-def test_user_remote_paths_are_routed_before_local_admission(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reference: str
+@pytest.mark.parametrize("scope", [InstallScope.PROJECT, InstallScope.USER])
+@pytest.mark.parametrize("repository", ["org/repo", "_local/parent"])
+@pytest.mark.parametrize(
+    "reference", ["../child", "../../../outside", "absolute"], ids=["sibling", "escape", "absolute"]
+)
+def test_remote_paths_are_routed_before_local_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reference: str,
+    repository: str,
+    scope: InstallScope,
 ) -> None:
-    """Real USER resolution expands authenticated Git paths before local admission."""
+    """Parsed Git origin outranks scope and repository spelling before local reads."""
+    outside = LocalPackageFactory(tmp_path).create("outside")
+    if reference == "absolute":
+        reference = outside.root.as_posix()
     factory = LocalPackageFactory(tmp_path / "remote" / "packages")
     parent = factory.create("parent", dependencies=[{"path": reference}])
     child = factory.create("child")
-    outside = LocalPackageFactory(tmp_path).create("outside")
     remote = {
-        "git": "https://gitlab.example.invalid:8443/org/repo",
+        "git": f"https://gitlab.example.invalid:8443/{repository}",
         "path": "packages/parent",
         "ref": "a" * 40,
     }
@@ -230,7 +240,8 @@ def test_user_remote_paths_are_routed_before_local_admission(
     downloader.download_package.side_effect = download
     local_copy = MagicMock(side_effect=AssertionError("Remote path reached local acquisition"))
     monkeypatch.setattr("apm_cli.install.phases.local_content._copy_local_package", local_copy)
-    with _resolved_scope(consumer.manifest_path, InstallScope.USER, downloader) as ctx:
+    with _resolved_scope(consumer.manifest_path, scope, downloader) as ctx:
+        local_copy.assert_not_called()
         requested = [call.args[0] for call in downloader.download_package.call_args_list]
         expected_paths = ["packages/parent"]
         if reference == "../child":
@@ -252,11 +263,17 @@ def test_user_remote_paths_are_routed_before_local_admission(
             assert user_scope_rejection_reason(dep, InstallScope.USER) is None
             assert dep.get_unique_key() in ctx.callback_downloaded
             node = ctx.dependency_graph.dependency_tree.get_node(dep.get_unique_key())
+            assert node.package.proven_source_kind == "git"
             assert node.package.source_path.is_relative_to(ctx.apm_modules_dir)
             assert dep.get_install_path(ctx.apm_modules_dir).joinpath("apm.yml").read_bytes() == (
                 fixtures[dep.virtual_path].manifest_path.read_bytes()
             )
-        assert not (ctx.apm_modules_dir / "_local").exists()
+        assert all(not dep.is_local for dep in ctx.deps_to_install)
+        assert (
+            not DependencyReference.parse(outside.root.as_posix())
+            .get_install_path(ctx.apm_modules_dir)
+            .exists()
+        )
         assert outside.manifest_path.is_file()
         local_copy.assert_not_called()
 

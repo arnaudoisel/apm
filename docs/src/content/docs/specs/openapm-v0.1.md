@@ -654,8 +654,12 @@ filesystem dependency at user scope MUST be rejected. A relative
 transitive local filesystem dependency
 at user scope MUST be rejected unless the consumer has established
 its declaring local parent and that parent's original absolute
-source directory. A local-looking path or a recorded path string
-alone is not proof that its parent is local. The consumer MUST NOT
+source directory. Provenance comes from the declaring dependency's
+established source kind, not its repository name or path spelling.
+A repository-name prefix such as `_local/`, a local-looking path,
+or a recorded path string alone is not proof that its parent is local.
+Unknown provenance does not authorize an operator-local read.
+The consumer MUST NOT
 search another installation scope's installed packages to supply a
 missing source anchor.
 
@@ -3198,6 +3202,11 @@ every stored hash, foreclosing algorithm-ambiguity attacks.
 | 19| Executable deployment in non-interactive contexts    | [req-sc-014](#req-sc-014)                                          | Consumer-default  |
 | 20| Source-only or symlinked package content materialization | [req-sc-015](#req-sc-015)                                      | Consumer-default  |
 | 21| Native plugin namespace collision or ownership-ledger loss | [req-tg-013](#req-tg-013)                                      | Consumer-default  |
+| 22| Remote-to-local source admission via path or repository-name camouflage | [req-mf-016](#req-mf-016); established source provenance, original anchors, and source containment | Consumer-default |
+
+Source admission in [req-mf-016](#req-mf-016) determines whether and
+where dependency content may be acquired. It is distinct from the
+post-authorization target source-file plan in [req-sc-015](#req-sc-015).
 
 ### 10.12 Publisher provenance and attestations (reserved for v0.2)
 

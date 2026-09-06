@@ -152,10 +152,7 @@ class LocalDependencySource(DependencySource):
                 package=local_path_str,
             )
             if logger:
-                logger.verbose_detail(
-                    f"  Skipping {local_path_str} (relative local paths "
-                    "are project-relative and have no root at user scope)"
-                )
+                logger.verbose_detail(f"  Skipping {local_path_str} ({scope_reject})")
             return None
 
         # Determine the anchor for relative ``local_path`` (#857). For

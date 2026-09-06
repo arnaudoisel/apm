@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Keep remote dependencies with local-looking repository names behind remote source containment; only established local acquisition context authorizes transitive local reads. (#2820)
+
 ### Fixed
 
 - Global installs retain local relative children using their declaring source; `docs/src/content/docs/specs/openapm-v0.1.md` reconciles trusted-local anchoring with remote and internal-symlink containment, backed by executable conformance cases. (#2820)

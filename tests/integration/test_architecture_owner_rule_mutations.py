@@ -326,6 +326,14 @@ MUTATIONS: tuple[MutationCase, ...] = (
         intent="Resolution drops the declaring local parent's source context from admission.",
     ),
     MutationCase(
+        guard_id="install-deployment-local-scope-admission",
+        rule_id="install-deployment-local-scope-admission",
+        path="src/apm_cli/deps/apm_resolver.py",
+        old="proven_source_kind=self._source_kind_for_dependency(dep_ref)",
+        new='proven_source_kind="local"',
+        intent="Resolver assigns trusted-local provenance without acquisition evidence.",
+    ),
+    MutationCase(
         guard_id="install-deployment-lsp-lifecycle",
         rule_id="install-deployment-lsp-lifecycle",
         path="src/apm_cli/install/lsp/integration.py",

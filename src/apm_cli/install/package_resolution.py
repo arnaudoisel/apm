@@ -116,12 +116,13 @@ def resolve_parsed_dependency_reference(
 def user_scope_rejection_reason(
     dep_ref: Any, scope: Any, *, parent_pkg: APMPackage | None = None
 ) -> str | None:
-    """Return a validation-fail reason if *dep_ref* is invalid at user scope.
+    """Return a scope or declaring-source admission failure.
 
     Absolute local paths are unambiguous (#937). A relative transitive local
     path also has an anchor when the resolver supplies its declaring local
     package's original absolute source directory (#2815). Direct references
     and unknown, remote, or unanchored parents retain the relative-path rejection.
+    A transitive local read requires established local provenance at every scope.
     """
     if scope is None:
         return None
@@ -135,22 +136,28 @@ def user_scope_rejection_reason(
         # which expanduser()s local paths before consuming them: `~/pkg` is
         # absolute after expansion and must NOT be rejected here.
         if not Path(local_path).expanduser().is_absolute():
-            from apm_cli.deps.apm_resolver import APMDependencyResolver
-
             if (
                 local_path
                 and dep_ref.declaring_parent
                 and parent_pkg is not None
-                and parent_pkg.source
+                and parent_pkg.proven_source_kind == "local"
                 and parent_pkg.source_path is not None
                 and parent_pkg.source_path.is_absolute()
-                and not APMDependencyResolver._is_remote_parent(parent_pkg)
             ):
                 return None
             return (
                 "relative local paths are not supported at user scope (--global). "
                 "Use an absolute path or a remote reference (owner/repo) instead"
             )
+    if (
+        dep_ref.is_local
+        and (dep_ref.declaring_parent or parent_pkg is not None)
+        and (parent_pkg is None or parent_pkg.proven_source_kind != "local")
+    ):
+        return (
+            "local dependency has no established local declaring source. "
+            "Use a same-repository remote reference, or explicitly select a local source"
+        )
     if dep_ref.is_parent_repo_inheritance and scope is InstallScope.USER:
         return GIT_PARENT_USER_SCOPE_ERROR
     return None
