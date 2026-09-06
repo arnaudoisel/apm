@@ -24,6 +24,10 @@ also works). A local package can still declare a relative child such as
 `../child`: APM resolves it from that declaring package's original source
 directory, not the current working directory or `~/.apm/`. Direct or unanchored
 relative local references remain unsupported at user scope.
+This source anchor does not change deployment scope. APM does not look in
+another scope's installed packages for a missing local source. Remote-declared
+relative paths stay inside their authenticated repository; symlinks within a
+selected local package must stay inside that package's resolved source directory.
 
 :::caution
 `http://` dependencies are refused unless you pass `--allow-insecure` (direct) or `--allow-insecure-host HOSTNAME` (transitive).

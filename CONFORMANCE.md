@@ -25,7 +25,7 @@ All four conformance classes (Producer, Consumer, Registry, Governance) carry ac
 | Class | Active | Skipped | Xfail | Unbound |
 |-------|-------:|--------:|------:|--------:|
 | Producer | 12 | 0 | 0 | 0 |
-| Consumer | 90 | 1 | 0 | 0 |
+| Consumer | 91 | 0 | 0 | 0 |
 | Registry | 1 | 0 | 0 | 0 |
 | Governance | 17 | 0 | 0 | 0 |
 
@@ -74,7 +74,7 @@ All four conformance classes (Producer, Consumer, Registry, Governance) carry ac
 | [req-mf-013](docs/src/content/docs/specs/openapm-v0.1.md#req-mf-013) | MUST | 4.5 | consumer | active | 1 | - |
 | [req-mf-014](docs/src/content/docs/specs/openapm-v0.1.md#req-mf-014) | MUST | 4.2.3 | producer | active | 1 | - |
 | [req-mf-015](docs/src/content/docs/specs/openapm-v0.1.md#req-mf-015) | MUST | 4.2.3 | producer | active | 1 | - |
-| [req-mf-016](docs/src/content/docs/specs/openapm-v0.1.md#req-mf-016) | MUST | 4.3.5 | consumer | skipped | 1 | - |
+| [req-mf-016](docs/src/content/docs/specs/openapm-v0.1.md#req-mf-016) | MUST | 4.3.5 | consumer | active | 32 | - |
 | [req-mf-017](docs/src/content/docs/specs/openapm-v0.1.md#req-mf-017) | MUST | 4.7 | producer | active | 1 | - |
 | [req-mf-018](docs/src/content/docs/specs/openapm-v0.1.md#req-mf-018) | MUST | 4.6.1 | consumer | active | 1 | - |
 | [req-mf-019](docs/src/content/docs/specs/openapm-v0.1.md#req-mf-019) | MUST | 4.2.4 | consumer | active | 1 | - |
@@ -162,7 +162,4 @@ All four conformance classes (Producer, Consumer, Registry, Governance) carry ac
 
 ### req-lk-018
 - Publish-timestamp recording is a publisher-side SHOULD that requires registry interaction to exercise end-to-end. The schema affordance (generated_at) is asserted above; full publisher coverage requires the registry wire conformance module which is not in v0.1 scope.
-
-### req-mf-016
-- Path-shape negative test requires apm_cli's path-policy loader to be invokable from the test harness; the JSON Schema currently models `path` as a free-form string. Tracked as a follow-up: tighten the schema to forbid leading `/` and document the absolute-path rejection in the schema additionalProperties.
 

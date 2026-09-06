@@ -221,6 +221,8 @@ type"), the definition section is cross-linked.
 | **Manifest** | The `apm.yml` file for one package or installation scope. Defined in [Section 4](#4-manifest-format-apmyml). |
 | **Lockfile** | The `apm.lock.yaml` file recording one installation scope's resolved state. Defined in [Section 5](#5-lockfile-format-apmlockyaml). |
 | **Installation scope** | The isolated manifest, lockfile, and target-configuration boundary for an install. A project scope is rooted at the consumer project. A user scope is independent of any project root and uses an implementation-defined user location disclosed by the consumer's conformance statement. |
+| **Source anchor** | The original declaring package's source directory used to resolve a relative dependency path. It is not the dependency's staging or deployment directory. See [Section 4.3.5](#435-local-path-dependencies). |
+| **Source containment root** | The boundary within which source content is permitted to resolve: the authenticated repository root for a remote-declared relative dependency, or the selected local package's resolved source directory for symlinks inside that package. It is distinct from installation scope and from the source anchor. |
 | **Policy** | An `apm-policy.yml` file evaluated by a Governance implementation. Defined in [Section 6](#6-policy-format-apm-policyyml). |
 | **Package** | A unit identified by a manifest (`apm.yml`) or by a recognised package layout (see [Section 8.1](#81-primitive-types)). |
 | **Primitive** | A typed unit of agent configuration (instruction, prompt, agent, skill, command, hook, or mcp server). Defined in [Section 8.1](#81-primitive-types). |
@@ -621,10 +623,69 @@ selection is configured per project.
 <a id="req-mf-016"></a>
 **[req-mf-016]** A conforming **consumer** implementation MUST
 recognise dependency strings beginning with `./`, `../`, `/`, `~/`,
-`.\`, `..\`, or `~\` as local-path entries. The resolver MUST refuse
-any local-path entry whose normalised form contains `..` segments
-that would escape the project root, with a diagnostic naming the
-offending path.
+`.\`, `..\`, or `~\` as local-path entries. Admission and resolution
+depend on the declaring source, not merely on the presence of `..`:
+
+(a) **Selected local sources.** A consumer MAY admit operator-selected
+local sources at project and user scope, including absolute paths,
+home-expanded paths, and sibling packages outside the consumer
+project root. A consumer MAY restrict allowed local source roots
+through operator configuration or a documented implementation policy;
+this requirement does not mandate access to every local root. Such
+restrictions MUST be reported when they cause rejection, not presented
+as a successfully materialized dependency.
+
+An admitted direct project-scope relative dependency MUST resolve
+from the consumer project's source directory. An admitted absolute
+path MUST be resolved as an absolute source, after any home-directory
+expansion. An admitted relative dependency declared by an explicitly
+selected local package, or by another local package reached through
+that declared local dependency chain, MUST resolve from the declaring
+package's original source directory, including at user scope. The
+consumer MUST NOT substitute a staging directory, deployment directory,
+or unrelated current working directory for the declaring source anchor.
+
+(b) **User-scope admission.** A direct relative local dependency at
+user scope MUST be rejected. A relative transitive local dependency
+at user scope MUST be rejected unless the consumer has established
+its declaring local parent and that parent's original absolute
+source directory. A local-looking path or a recorded path string
+alone is not proof that its parent is local. The consumer MUST NOT
+search another installation scope's installed packages to supply a
+missing source anchor.
+
+(c) **Remote-declared paths.** A relative local-path entry declared
+by a remote Git package MUST resolve inside the authenticated parent
+repository root, after path normalisation and symlink resolution.
+An admitted entry MUST retain the parent's remote repository identity
+and ref, and MUST NOT become a read from the consumer's local package
+namespace. Absolute paths, including home-expanded and Windows
+absolute paths, and paths escaping that repository MUST be rejected.
+If the entry cannot be tied to that remote repository and ref, it
+MUST be rejected rather than treated as a trusted local dependency.
+
+(d) **Local package contents.** Once a local source directory is
+selected and resolved, that directory is the containment root for
+symlinks inside the package. An internal symlink whose resolved
+target stays inside that root MUST be materialized as the target's
+content, subject to the other applicable admission and content
+selection rules. A broken or cyclic internal symlink, or one whose
+target escapes that root, MUST cause local materialization to fail.
+Choosing a path that resolves to a source directory is distinct from
+dereferencing symlinks within the selected package's content.
+
+Rejections under this requirement MUST identify the offending path
+and the reason for refusal. These source rules do not change the
+manifest, lockfile, or target-configuration boundary of the selected
+installation scope.
+
+**Security note (informative).** Selecting a local source is an
+explicit trust decision about that source and its declared local
+dependency chain, not a claim that local content is harmless.
+Source anchoring, remote-repository containment, internal-symlink
+containment, and deployment eligibility are separate checks. This
+requirement does not promise atomicity of the entire install or
+race-free filesystem isolation against concurrent source mutation.
 
 #### 4.3.6 MCP dependencies
 
@@ -3841,9 +3902,58 @@ renumbering of conformance classes.
 
 **Total normative statements: 121** (116 MUST, 5 SHOULD).
 
+The [req-mf-016](#req-mf-016) consumer entry covers source anchoring,
+user-scope admission, remote-repository containment, and local
+internal-symlink handling. Its identifier, class, and MUST keyword
+are unchanged by the local-path correction; clauses (a)-(d) remain
+one indexed requirement.
+
 ---
 
 ## Appendix D. Revision history
+
+### Proposed local-path correction (2026-09-06)
+
+Amendment identifier **0.1.40 (proposed)** tracks the focused Mode C
+stale-spec correction in
+[microsoft/apm#2818](https://github.com/microsoft/apm/issues/2818),
+drafted in [microsoft/apm#2820](https://github.com/microsoft/apm/pull/2820).
+It replaces [req-mf-016](#req-mf-016)'s blanket consumer-root escape
+rejection with declaring-source anchoring, trusted local sibling
+admission, remote-repository containment, and internal local-symlink
+containment. It adds executable positive and negative conformance
+cases in place of the skipped absolute-path-rejection claim.
+Statement count remains **121** (116 MUST, 5 SHOULD); no requirement
+identifier is added, removed, or renumbered, and no file schema changes.
+
+**Classification and compatibility.** This is a substantive normative
+correction, not typo errata. It removes a false universal
+consumer-root containment claim without requiring every consumer to
+admit every local source root. A consumer that restricts local roots
+may retain that restriction as documented policy, with honest
+rejection diagnostics; a consumer that admits a reference is bound
+to the specified source anchor and containment rules. Existing
+trusted-local sibling consumers retain their source-selection
+behavior. Implementers should distinguish permitted source roots
+from the required anchoring and containment of admitted sources.
+The explicit remote and internal-symlink obligations also need
+compatibility review; this amendment does not assume that every
+previously conforming implementation already enforced them. The proposed
+amendment identifier does not itself decide whether the compatibility
+impact requires a new minor revision and migration window under
+[Section 9.2](#92-breaking-vs-non-breaking-change-definition),
+[Section 9.4](#94-errata-vs-new-revision), and
+[Section 9.5](#95-migration-windows-for-consumers). That classification
+remains part of the non-author review and maintainer ratification.
+No versioning or migration exception is claimed.
+
+**One-amendment process exception.** On 2026-09-06 the maintainer
+authorized this local-path correction without the 14-day public
+comment period in Section 9.3 step 4. The exception applies only to
+this amendment in #2820. The required non-author review, conformance
+evidence, and ratification remain; Section 9 and the process for
+future amendments are unchanged. This draft does not record panel
+approval or a completed ratification.
 
 | Version | Date       | Changes                                                  |
 |---------|------------|----------------------------------------------------------|

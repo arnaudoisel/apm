@@ -87,6 +87,8 @@ requirements:
     keyword: MUST
     section: "4.3.5"
     conformance_class: consumer
+    fixture: tests/fixtures/spec-conformance/manifest/valid-local-parent.yml
+    notes: "Source anchoring and scope admission are distinct from remote-repository and internal local-symlink containment; executable positive and negative cases replace the absolute-path waiver (#2818)."
   - id: req-mf-017
     keyword: MUST
     section: "4.7"

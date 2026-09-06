@@ -59,12 +59,22 @@ root, such as `../sibling-pkg`, are supported. Direct user-scope local
 dependencies must use absolute paths (`~/path` also works); a relative
 reference without a known local parent's absolute source anchor is rejected.
 Neither CWD nor `~/.apm/` substitutes for that anchor.
+APM does not search another installation scope's installed packages to resolve
+a missing local source. Local source selection is a trust decision, not a
+guarantee that the package content is safe.
 
 Remote-cloned packages may declare a relative `path:` only when it resolves
 inside the same authenticated remote repo root. APM expands that path to the
 parent's remote host/repo/ref and fetches the sibling from the same origin.
 Absolute paths, paths that escape the repo root, and cross-repo local paths
 are rejected.
+
+After a local source directory is selected and resolved, symlinks inside that
+package must resolve within that same directory. Internal links are copied as
+content; broken, cyclic, or escaping links fail materialization. Selecting a
+source-directory path that itself resolves through a symlink is a separate
+operation. These checks do not make an entire install atomic or protect against
+all concurrent filesystem changes.
 
 **GitLab `path:` fetch transport:** GitLab `path:` files are fetched over git
 transport, not the REST API, so self-hosted instances with the API disabled

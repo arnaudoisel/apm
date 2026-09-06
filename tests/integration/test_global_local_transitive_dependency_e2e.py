@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -68,7 +69,14 @@ def test_local_transitive_scope_parity(
     if user_scope:
         args += ("--global",)
 
-    for iteration in range(2):
+    lock_bytes = None
+    for iteration in range(3):
+        if iteration == 2:
+            # Keep the written lock and source roots; force actual rematerialization.
+            modules = manifest_root / "apm_modules"
+            assert modules.is_dir() and not modules.is_symlink()
+            assert modules.is_relative_to(environment.root)
+            shutil.rmtree(modules)
         result = runner.run(
             args,
             scenario_id=f"local-transitive-scope-parity-{iteration}",
@@ -78,6 +86,10 @@ def test_local_transitive_scope_parity(
         evidence = f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         assert result.returncode == 0, evidence
         lockfile = load_yaml(manifest_root / "apm.lock.yaml")
+        current_lock_bytes = (manifest_root / "apm.lock.yaml").read_bytes()
+        if lock_bytes is not None:
+            assert current_lock_bytes == lock_bytes
+        lock_bytes = current_lock_bytes
         entries = lockfile["dependencies"]
         assert len(entries) == 2, evidence
         by_repo = {entry["repo_url"]: entry for entry in entries}

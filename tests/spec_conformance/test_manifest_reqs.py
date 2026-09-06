@@ -179,19 +179,6 @@ def test_producer_rejects_unknown_registries_keys():
         validate_against("manifest-v0.1.schema.json", doc)
 
 
-@pytest.mark.req("req-mf-016")
-def test_consumer_rejects_absolute_paths_in_apm_source():
-    """Spec restricts apm-source `path:` to relative form."""
-    assert_spec_contains("path")
-    waive(
-        "Path-shape negative test requires apm_cli's path-policy loader "
-        "to be invokable from the test harness; the JSON Schema currently "
-        "models `path` as a free-form string. Tracked as a follow-up: "
-        "tighten the schema to forbid leading `/` and document the "
-        "absolute-path rejection in the schema additionalProperties."
-    )
-
-
 @pytest.mark.req("req-mf-017")
 def test_producer_publishes_apm_yml_at_repo_root():
     assert_spec_contains("apm.yml")

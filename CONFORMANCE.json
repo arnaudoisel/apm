@@ -479,16 +479,45 @@
     },
     {
       "conformance_class": "consumer",
+      "fixture": "tests/fixtures/spec-conformance/manifest/valid-local-parent.yml",
       "id": "req-mf-016",
       "keyword": "MUST",
       "section": "4.3.5",
-      "status": "skipped",
-      "test_count": 1,
+      "status": "active",
+      "test_count": 32,
       "tests": [
-        "tests/spec_conformance/test_manifest_reqs.py::test_consumer_rejects_absolute_paths_in_apm_source"
-      ],
-      "waivers": [
-        "Path-shape negative test requires apm_cli's path-policy loader to be invokable from the test harness; the JSON Schema currently models `path` as a free-form string. Tracked as a follow-up: tighten the schema to forbid leading `/` and document the absolute-path rejection in the schema additionalProperties."
+        "tests/spec_conformance/test_local_path_reqs.py::test_direct_local_source_is_anchored_before_copy[project-relative]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_direct_local_source_is_anchored_before_copy[user-absolute]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_direct_local_source_is_anchored_before_copy[user-home]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_local_package_rejects_file_symlink_cycle",
+        "tests/spec_conformance/test_local_path_reqs.py::test_local_package_rejects_uncontained_or_unresolvable_symlink[broken]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_local_package_rejects_uncontained_or_unresolvable_symlink[directory-cycle]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_local_package_rejects_uncontained_or_unresolvable_symlink[outside-directory]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_local_package_rejects_uncontained_or_unresolvable_symlink[outside-file]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_local_path_prefixes_are_recognized[../child]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_local_path_prefixes_are_recognized[..\\\\child]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_local_path_prefixes_are_recognized[./child]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_local_path_prefixes_are_recognized[.\\\\child]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_local_path_prefixes_are_recognized[/child]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_local_path_prefixes_are_recognized[~/child]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_local_path_prefixes_are_recognized[~\\\\child]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_local_sibling_uses_original_source_in_each_scope[InstallScope.PROJECT]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_local_sibling_uses_original_source_in_each_scope[InstallScope.USER]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_parent_cannot_expand_into_host_files[absolute-inside]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_parent_cannot_expand_into_host_files[absolute]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_parent_cannot_expand_into_host_files[escape]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_parent_cannot_expand_into_host_files[home]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_parent_cannot_expand_into_host_files[symlink]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_parent_cannot_expand_into_host_files[windows-absolute]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_relative_child_retains_repository_and_ref[../child]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_relative_child_retains_repository_and_ref[..\\\\child]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_selected_local_root_allows_only_internal_symlink_content[resolved-source-alias]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_selected_local_root_allows_only_internal_symlink_content[source-directory]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_user_relative_admission_requires_proven_local_parent[direct]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_user_relative_admission_requires_proven_local_parent[missing-parent]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_user_relative_admission_requires_proven_local_parent[missing-source]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_user_relative_admission_requires_proven_local_parent[relative-source]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_user_relative_admission_requires_proven_local_parent[remote]"
       ]
     },
     {
@@ -1412,8 +1441,8 @@
   "spec_version": "v0.1.1",
   "summary_by_class": {
     "consumer": {
-      "active": 90,
-      "skipped": 1,
+      "active": 91,
+      "skipped": 0,
       "unbound": 0,
       "xfail": 0
     },
