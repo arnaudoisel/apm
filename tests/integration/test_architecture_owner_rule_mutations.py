@@ -692,9 +692,9 @@ MUTATIONS: tuple[MutationCase, ...] = (
         guard_id="transport-platform-clone-connect-retry",
         rule_id="transport-platform-clone-connect-retry",
         path="src/apm_cli/deps/clone_engine.py",
-        old="def _is_connect_failure(",
-        new="def _is_connect_failure_disabled(",
-        intent="CloneEngine loses the bounded HTTPS connection-retry classifier.",
+        old="_clone(url, _env_for(attempt, url), target_path)",
+        new="clone_action(url, _env_for(attempt, url), target_path)",
+        intent="A transport attempt invokes the clone action without canonical connection recovery.",
     ),
     MutationCase(
         guard_id="transport-platform-git-cache-identity",
