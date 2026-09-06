@@ -19,7 +19,7 @@
 #
 # Informative CI input; Section 12.6's normative wire-format reservation
 # remains in place. requirements-v0.1.schema.json describes this unchanged
-# format, not the assessed spec version. Audit-owner clause still pending.
+# format, not the assessed spec version. Publication and ratification are pending.
 
 requirements_format_version: "1"
 spec_version: "v0.2.0"
@@ -225,6 +225,11 @@ requirements:
     section: "5.2"
     conformance_class: consumer
     notes: "source-cased materialization_repo_url remains non-identity metadata and drives rollback-safe, collision-closed materialization/link spelling"
+  - id: req-lk-023
+    keyword: MUST
+    section: "5.5"
+    conformance_class: consumer
+    notes: "Current manifest then selected saved configuration then detection determines source-derived replay; prior claims widen comparison only. Live project/user configuration, deployment bytes, native databases and sidecars stay unchanged. Unsupported native replay fails before its writer. test_audit_current_intent_contract.py carries 29 genuine replay/current-intent cases; its separate invalid-owner case binds req-pl-016."
   - id: req-pl-001
     keyword: MUST
     section: "6.1"

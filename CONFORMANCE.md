@@ -17,6 +17,14 @@ This inventory assesses only the selected corrective revision. It does not estab
 
 The four conformance classes (Producer, Consumer, Registry, Governance) are inventoried below, not certified by this report. The Registry binding includes the trust-anchor invariant test in `tests/spec_conformance/test_registry_reqs.py`, which hashes the committed Registry-archive fixture and asserts equality with the digest the paired lockfile advertises (sec.11.3.3, req-rg-001).
 
+## Assessment limitations
+
+The reference CLI's bare content audit uses source-derived drift replay, not the stored-hash baseline required by req-lk-017's unqualified audit obligation. The stored-hash and full-SHA consistency baselines are exercised in CI/conformance audit. This inventory does not claim full Consumer conformance in bare audit mode.
+
+The native Cowork audit controls use a controlled pre-existing standalone-skill snapshot; they do not establish a successful Cowork install/audit round trip. The Grok user-scope control does exercise install and audit.
+
+A selected native runtime without an isolated replay backend is reported as unsupported before its live writer. No new native database scratch backend or hosted-runtime evidence is supplied by this inventory.
+
 ## Consumer user-scope disclosure
 
 - Manifest: `~/.apm/apm.yml`
@@ -28,7 +36,7 @@ The four conformance classes (Producer, Consumer, Registry, Governance) are inve
 | Class | Active | Skipped | Xfail | Unbound |
 |-------|-------:|--------:|------:|--------:|
 | Producer | 12 | 0 | 0 | 0 |
-| Consumer | 91 | 0 | 0 | 0 |
+| Consumer | 92 | 0 | 0 | 0 |
 | Registry | 1 | 0 | 0 | 0 |
 | Governance | 17 | 0 | 0 | 0 |
 
@@ -62,6 +70,7 @@ The four conformance classes (Producer, Consumer, Registry, Governance) are inve
 | [req-lk-020](docs/src/content/docs/specs/openapm-v0.2.md#req-lk-020) | MUST | 5.2 | consumer | active | 3 | - |
 | [req-lk-021](docs/src/content/docs/specs/openapm-v0.2.md#req-lk-021) | MUST | 5.2 | consumer | active | 2 | - |
 | [req-lk-022](docs/src/content/docs/specs/openapm-v0.2.md#req-lk-022) | MUST | 5.2 | consumer | active | 4 | - |
+| [req-lk-023](docs/src/content/docs/specs/openapm-v0.2.md#req-lk-023) | MUST | 5.5 | consumer | active | 29 | - |
 | [req-mf-001](docs/src/content/docs/specs/openapm-v0.2.md#req-mf-001) | MUST | 4.1 | producer | active | 1 | - |
 | [req-mf-002](docs/src/content/docs/specs/openapm-v0.2.md#req-mf-002) | MUST | 4.1 | producer | active | 1 | - |
 | [req-mf-003](docs/src/content/docs/specs/openapm-v0.2.md#req-mf-003) | MUST | 4.1 | producer | active | 1 | - |
@@ -101,7 +110,7 @@ The four conformance classes (Producer, Consumer, Registry, Governance) are inve
 | [req-pl-013](docs/src/content/docs/specs/openapm-v0.2.md#req-pl-013) | MUST | 6.8 | governance | active | 1 | - |
 | [req-pl-014](docs/src/content/docs/specs/openapm-v0.2.md#req-pl-014) | MUST | 6.8 | governance | active | 1 | - |
 | [req-pl-015](docs/src/content/docs/specs/openapm-v0.2.md#req-pl-015) | MUST | 6.3.5 | governance | active | 1 | - |
-| [req-pl-016](docs/src/content/docs/specs/openapm-v0.2.md#req-pl-016) | MUST | 6.8 | governance | active | 1 | - |
+| [req-pl-016](docs/src/content/docs/specs/openapm-v0.2.md#req-pl-016) | MUST | 6.8 | governance | active | 2 | - |
 | [req-pl-017](docs/src/content/docs/specs/openapm-v0.2.md#req-pl-017) | MUST | 6.8 | governance | active | 1 | - |
 | [req-pr-001](docs/src/content/docs/specs/openapm-v0.2.md#req-pr-001) | MUST | 8.2 | consumer | active | 1 | - |
 | [req-pr-002](docs/src/content/docs/specs/openapm-v0.2.md#req-pr-002) | MUST | 8.3 | consumer | active | 1 | - |

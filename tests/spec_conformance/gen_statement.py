@@ -41,6 +41,18 @@ USER_SCOPE_DISCLOSURE = {
         "MCPClientAdapter.supports_user_scope (OpenAPM Target Registry v0.1 implementation profile)"
     ),
 }
+ASSESSMENT_LIMITATIONS = [
+    "The reference CLI's bare content audit uses source-derived drift replay, not the "
+    "stored-hash baseline required by req-lk-017's unqualified audit obligation. "
+    "The stored-hash and full-SHA consistency baselines are exercised in CI/conformance "
+    "audit. This inventory does not claim full Consumer conformance in bare audit mode.",
+    "The native Cowork audit controls use a controlled pre-existing standalone-skill "
+    "snapshot; they do not establish a successful Cowork install/audit round trip. "
+    "The Grok user-scope control does exercise install and audit.",
+    "A selected native runtime without an isolated replay backend is reported as "
+    "unsupported before its live writer. No new native database scratch backend "
+    "or hosted-runtime evidence is supplied by this inventory.",
+]
 
 
 def _ensure_coverage() -> Coverage:
@@ -141,6 +153,7 @@ def build_json() -> dict:
         "total_requirements": len(entries),
         "summary_by_class": summary,
         "consumer_user_scope": USER_SCOPE_DISCLOSURE,
+        "assessment_limitations": ASSESSMENT_LIMITATIONS,
         "requirements": entries,
     }
 
@@ -218,7 +231,10 @@ def build_md(doc: dict) -> str:
                 waivers_section.append(f"- {w}")
             waivers_section.append("")
     waivers_md = "\n".join(waivers_section) + "\n"
-    return preamble + scope_section + summary_section + table + waivers_md
+    limitations = (
+        "## Assessment limitations\n\n" + "\n\n".join(doc["assessment_limitations"]) + "\n\n"
+    )
+    return preamble + limitations + scope_section + summary_section + table + waivers_md
 
 
 def _is_ascii(text: str) -> bool:

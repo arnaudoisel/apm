@@ -36,4 +36,6 @@ An `active` binding does not establish that a test ran or passed. Some bindings 
 
 Current local-source cases assess the corrective req-mf-016 only. They do not prove that the CLI ever satisfied the previous minor's blanket project-root refusal. Preserving that artifact does not claim that the current suite proves historical compliance. The requirements manifest remains informative, existing wire-schema identities are unchanged, and the `latest` citation is not advanced during draft preparation.
 
+The audit cases bind current target intent and read-only replay to req-lk-023. They do not erase inherited integrity requirements: the CLI's bare content audit uses source-derived drift, while its stored-hash and full-SHA consistency baselines run in CI/conformance audit. The unqualified audit obligation in req-lk-017 remains an explicit bare-mode conformance limitation. Native Cowork cases use pre-existing fixture state, not a successful native install round trip.
+
 For the broader drift-detection story (how the spec authors prevent the spec from rotting relative to the only implementation), see [`CONTRIBUTING.md` -- Spec amendment workflow](https://github.com/microsoft/apm/blob/main/CONTRIBUTING.md#spec-amendment-workflow).

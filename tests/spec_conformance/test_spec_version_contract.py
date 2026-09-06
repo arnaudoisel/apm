@@ -238,3 +238,24 @@ def test_report_identity_and_links_follow_the_selected_assessment() -> None:
     requirement_links = re.findall(r"\[req-[^\]]+\]\(([^)]+)\)", markdown)
     assert len(requirement_links) == len(document["requirements"])
     assert {urlparse(link).path for link in requirement_links} == {document["spec_path"]}
+
+
+def test_corrective_revision_adds_only_the_approved_audit_requirement() -> None:
+    old = (_manifest.SPEC_DIR / "openapm-v0.1.md").read_text()
+    current = spec_text()
+    pattern = r'<a id="(req-[a-z]{2,3}-[0-9]{3})"></a>'
+    old_ids, new_ids = set(re.findall(pattern, old)), re.findall(pattern, current)
+    assert len(new_ids) == len(set(new_ids))
+    assert set(new_ids) == old_ids | {"req-lk-023"}
+    assert len(new_ids) == len(_manifest.load_requirements())
+    assert f"**{len(new_ids)} normative statements**" in current
+    assert f"**Total normative statements: {len(new_ids)}**" in current
+
+
+def test_binding_inventory_discloses_unresolved_bare_audit_conformance_limit() -> None:
+    """A new assessed version cannot turn a known implementation gap into a pass."""
+    document = gen_statement.build_json()
+    assert document["assessment_limitations"] == gen_statement.ASSESSMENT_LIMITATIONS
+    markdown = gen_statement.build_md(document)
+    assert "does not claim full Consumer conformance in bare audit mode" in markdown
+    assert "controlled pre-existing standalone-skill" in markdown

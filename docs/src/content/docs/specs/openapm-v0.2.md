@@ -17,8 +17,8 @@ remain pending. Citing this draft as a ratified specification is inappropriate.
 
 This bounded corrective minor changes only local-source provenance and
 anchoring ([req-mf-016](#req-mf-016)) and the current-intent, read-only
-audit contract in Section 5.5. The audit-owner wording is pending; this
-draft is not a publishable candidate until that input is integrated.
+audit contract ([req-lk-023](#req-lk-023)) in Section 5.5. This is a
+review candidate, not a publication or ratification record.
 Features previously reserved for v0.2 remain reserved for a future
 revision; they are not activated by v0.2.0.
 
@@ -145,7 +145,7 @@ between the companion corpus and the implementation.
 
 ### 1.3 Document conventions
 
-- This draft carries **121 normative statements** indexed in
+- This revision carries **122 normative statements** indexed in
   [Appendix C](#appendix-c-index-of-normative-statements).
 - All on-disk files defined by this specification are **YAML 1.2**
   parsed under the safe subset defined in
@@ -1223,8 +1223,58 @@ regenerating the lockfile from the manifest.
 
 ### 5.5 Drift and integrity model
 
-The lockfile is the contract `apm audit` validates the workspace
-against.
+The lockfile supplies dependency identities and recorded deployment ownership
+for audit. Replay compares those records and the installed files against
+source-derived output under current target intent, not a historical target
+selection inferred from ownership.
+
+<a id="req-lk-023"></a>
+**[req-lk-023]** A conforming **consumer** that replays primitive integration
+to audit drift MUST select the current targets in this order: the applicable
+scope's validated manifest `target` / `targets` declaration, then the saved
+user target configuration, then the existing target-detection rules. A present
+invalid manifest declaration, or an invalid saved target when that fallback
+is selected, MUST produce a failing target-resolution result rather than fall
+through to a lower-precedence source.
+Explicit selection and detection are distinct: reading a saved target does
+not turn a filesystem signal into a registered detection predicate.
+
+The consumer MUST resolve the selected profiles in the live operation's
+scope and preserve their deployment layout and experimental or runtime
+prerequisites. Filesystem replay MUST rebase their destinations into isolated
+scratch roots; it MUST NOT carry live native or user roots into write
+operations. An unavailable selected target MUST produce a target-resolution
+failure, not a successful empty replay.
+
+Replay MUST derive expected paths and bytes from the resolved sources and
+current target intent, independently of deployment ownership records. It MUST
+NOT use those records to recover an earlier unsaved `install --target`
+override or to suppress an expected file whose ownership is missing. Changing
+current intent MUST NOT remove existing claimed files under a formerly
+selected target from drift comparison; directory claims retain their existing
+membership semantics and containment boundaries. Claims widen installed-file
+comparison only, not expected output. An unavailable recorded native root
+MUST produce a failing comparison result rather than silently exclude its claims.
+
+Replay and comparison MUST NOT modify the live manifest, lockfile, saved
+configuration, or deployed bytes, including native databases and sidecars.
+If a selected native runtime has no isolated replay backend, the consumer MUST
+report an unsupported-replay failure before invoking its live writer.
+Successful target selection alone does not imply replay support. This does
+not authorize repair operations or weaken [req-sc-001](#req-sc-001)
+content-integrity checks or [req-pl-016](#req-pl-016) invalid-owner failures.
+
+**Result and exit scope (informative).** A failing target-resolution,
+replay, or comparison result is not a successful empty replay, even when
+the command reports it advisory in default mode. This requirement does not
+add an unconditional nonzero exit for bare audit. Ordinary source-derived
+drift and incomplete or unsupported replay remain subject to
+[req-pl-014](#req-pl-014); CI/conformance audit gates failed aggregate
+checks, while a passed advisory cache-miss skip is not a failure.
+Independent hard integrity obligations remain in force, including
+[req-lk-003](#req-lk-003), [req-lk-017](#req-lk-017), and
+[req-pl-016](#req-pl-016). A separately requested repair is not replay
+and receives no mutation authorization from this requirement.
 
 <a id="req-lk-005"></a>
 **[req-lk-005]** A conforming **consumer** implementation MUST treat
@@ -1385,7 +1435,8 @@ This section's normative statements are:
   [req-lk-014](#req-lk-014), [req-lk-015](#req-lk-015),
   [req-lk-016](#req-lk-016), [req-lk-017](#req-lk-017),
   [req-lk-019](#req-lk-019), [req-lk-020](#req-lk-020),
-  [req-lk-021](#req-lk-021), [req-lk-022](#req-lk-022).
+  [req-lk-021](#req-lk-021), [req-lk-022](#req-lk-022),
+  [req-lk-023](#req-lk-023).
 - Consumer (SHOULD): [req-lk-007](#req-lk-007),
   [req-lk-018](#req-lk-018).
 
@@ -1717,8 +1768,13 @@ drift is detected, or when the drift check fails to complete (for
 example, an unreadable or corrupt local dependency graph). A drift
 check that is merely skipped for an advisory reason, such as a cache
 miss, does not by itself alter the exit status. When
-`security.audit.fail_on_drift` is absent or `false`, detected drift
-MUST be reported without, by itself, altering the audit exit status.
+`security.audit.fail_on_drift` is absent or `false`, ordinary detected
+drift MUST be reported without, by itself, altering the default-mode
+audit exit status. This default-mode rule does not suppress failed
+CI/conformance checks or the independent hard integrity failure in
+[req-pl-016](#req-pl-016). A failed current-intent resolution, replay,
+or comparison under [req-lk-023](#req-lk-023) is an incomplete drift
+check, not the advisory passed skip described above.
 
 <a id="req-pl-016"></a>
 **[req-pl-016]** A conforming **governance** implementation MUST treat
@@ -2420,6 +2476,10 @@ same type, the **first declared** dependency wins; later
 dependencies' versions MUST NOT replace the resolved primitive.
 
 ### 8.4 Target detection signals (normative)
+
+Audit replay selects current intent under [req-lk-023](#req-lk-023)
+before using this section's detection fallback. The saved-configuration
+branch is selection, not auto-detection.
 
 When the user has not specified a target via `--target` or in the
 manifest's `target:` field, the consumer auto-detects from
@@ -3436,6 +3496,7 @@ conformance statement identifying:
 [req-lk-017](#req-lk-017), [req-lk-018](#req-lk-018) (SHOULD),
 [req-lk-019](#req-lk-019), [req-lk-020](#req-lk-020),
 [req-lk-021](#req-lk-021), [req-lk-022](#req-lk-022),
+[req-lk-023](#req-lk-023),
 [req-rs-001](#req-rs-001), [req-rs-002](#req-rs-002),
 [req-rs-003](#req-rs-003), [req-rs-004](#req-rs-004),
 [req-rs-005](#req-rs-005), [req-rs-006](#req-rs-006),
@@ -3870,6 +3931,7 @@ the existing conformance classes or disabling [req-rg-001](#req-rg-001).
 | [req-lk-020](#req-lk-020)                | MUST    | 5.2     | consumer    |
 | [req-lk-021](#req-lk-021)                | MUST    | 5.2     | consumer    |
 | [req-lk-022](#req-lk-022)                | MUST    | 5.2     | consumer    |
+| [req-lk-023](#req-lk-023)                | MUST    | 5.5     | consumer    |
 | [req-pl-001](#req-pl-001)                | MUST    | 6.1     | governance  |
 | [req-pl-002](#req-pl-002)                | MUST    | 6.2     | governance  |
 | [req-pl-003](#req-pl-003)                | MUST    | 6.4     | governance  |
@@ -3944,7 +4006,7 @@ the existing conformance classes or disabling [req-rg-001](#req-rg-001).
 | [req-cf-001](#req-cf-001)                | MUST    | 12.5    | consumer    |
 | [req-cf-002](#req-cf-002)                | MUST    | 12.3    | consumer    |
 
-**Total normative statements: 121** (116 MUST, 5 SHOULD).
+**Total normative statements: 122** (117 MUST, 5 SHOULD).
 
 The [req-mf-016](#req-mf-016) consumer entry covers source anchoring,
 user-scope admission, remote-repository containment, and local
@@ -3966,7 +4028,13 @@ Only those two contracts change behavior. The approved local-source
 clauses replace [req-mf-016](#req-mf-016)'s previous blanket project-root
 escape rejection with source-provenance admission, original declaring-source
 anchors, remote-repository containment, and internal local-symlink rules.
-The audit clause is awaiting its owner's final wording and evidence.
+[req-lk-023](#req-lk-023) adds current-intent precedence, source-derived
+expected output, comparison of prior target claims, and read-only replay
+with unsupported native writers refused before invocation. Section 8.4
+cross-references that selection order; [req-pl-014](#req-pl-014)
+distinguishes default-mode advisory drift from CI/conformance failures.
+Statement count: **121 -> 122** (117 MUST, 5 SHOULD). No other
+requirement identifier is added, removed, or renumbered.
 
 **Classification and preservation.** These are substantive changes to
 the conformance contract under Sections 9.1, 9.2, and 9.4, not same-minor
