@@ -207,6 +207,7 @@ def child_main(arguments: list[str]) -> int:
             "source": source.as_posix(),
             "entry_point": entry.value,
             "python": sys.executable,
+            "cwd": Path.cwd().as_posix(),
         }
     )
     returncode = 1
@@ -302,23 +303,29 @@ def _commands_succeeded(
 
 def _reached(mutation: LifecycleMutation, observation: RunObservation, *, active: bool) -> bool:
     """Require the mutation-specific effect witness, not just a generic reach flag."""
+    project = None
     for event in observation.events:
+        if event.get("event") == "command_start":
+            cwd = event.get("cwd")
+            project = Path(cwd) if isinstance(cwd, str) and cwd else None
+        elif event.get("event") == "command_end":
+            project = None
         if event.get("event") != "reach" or event.get("changed") is not active:
             continue
         if mutation.id == "wrong-target-deployment":
-            original, replacement = event.get("original"), event.get("replacement")
-            written = event.get("written")
+            # This project-scoped fixture invokes the CLI from its consumer
+            # root. Bind the receipt to that command, not a self-reported
+            # destination or a neighboring skill with the same parent.
+            if project is None or not project.is_absolute() or ".." in project.parts:
+                continue
+            witness = Path(mutation.witness_path)
+            original = project / witness.parent.parent
+            replacement = project / ".claude/skills"
             destination = replacement if active else original
             if (
-                isinstance(original, str)
-                and isinstance(replacement, str)
-                and original != replacement
-                and isinstance(written, list)
-                and bool(written)
-                and all(
-                    isinstance(path, str) and Path(path).parent.as_posix() == destination
-                    for path in written
-                )
+                event.get("original") == original.as_posix()
+                and event.get("replacement") == replacement.as_posix()
+                and event.get("written") == [(destination / witness.parent.name).as_posix()]
             ):
                 return True
         else:
@@ -358,17 +365,31 @@ def classify_mutation(
     """Count only a reached fault and its exact law assertion after a green baseline."""
     baseline_reached = _reached(mutation, baseline, active=False)
     reached = _reached(mutation, mutant, active=True)
-    baseline_green = (
-        baseline.outcome == "executed"
-        and baseline_reached
-        and _commands_succeeded(baseline, mutation, "baseline")
-    )
+    baseline_commands_valid = _commands_succeeded(baseline, mutation, "baseline")
+    mutant_commands_valid = _commands_succeeded(mutant, mutation, "mutant")
+    baseline_green = baseline.outcome == "executed" and baseline_reached and baseline_commands_valid
     status = "error"
-    if baseline_green and reached and _commands_succeeded(mutant, mutation, "mutant"):
-        if _intended_failure(mutation, mutant):
-            status = "killed"
-        elif mutant.outcome == "executed":
-            status = "survived"
+    if baseline.outcome != "executed":
+        reason = f"baseline-not-green: {baseline.outcome}; {baseline.diagnostic}"
+    elif not baseline_commands_valid:
+        reason = "invalid-command-trace: baseline requires ordered successful commands"
+    elif not baseline_reached:
+        reason = f"effect-not-observed: baseline requires {mutation.witness_path}"
+    elif not mutant_commands_valid:
+        reason = "invalid-command-trace: mutant requires ordered successful commands"
+    elif not reached:
+        reason = f"effect-not-observed: mutant requires {mutation.witness_path}"
+    elif _intended_failure(mutation, mutant):
+        status, reason = "killed", ""
+    elif mutant.outcome == "executed":
+        status = "survived"
+        reason = f"mutation-survived: {mutation.intended_property} did not reject the effect"
+    else:
+        reason = (
+            f"unintended-oracle-failure: expected {mutation.failure_file}::"
+            f"{mutation.failure_function} at {mutation.witness_path}; "
+            f"observed {mutant.outcome} at {mutant.failure_file}::{mutant.failure_function}"
+        )
     return {
         "mutant_id": mutation.id,
         "case_id": mutation.case_id,
@@ -379,6 +400,7 @@ def classify_mutation(
         "baseline_outcome": baseline.outcome,
         "baseline_green": baseline_green,
         "status": status,
+        "rejection_reason": reason,
         "failure_diagnostic": mutant.diagnostic,
         "baseline": asdict(baseline),
         "mutant": asdict(mutant),
@@ -462,8 +484,13 @@ ISOLATION_CHECKS = (
 
 
 def read_mutation_results(path: Path) -> tuple[dict[str, Any], ...]:
-    """Recompute each JUnit claim, then let pytest and isolation failures veto it."""
+    """Parse JUnit once and delegate all mutation evidence checks to the extractor."""
     root = ET.parse(path).getroot()  # noqa: S314 - Local pytest-generated JUnit.
+    return read_mutation_results_from_root(root, path=path)
+
+
+def read_mutation_results_from_root(root: ET.Element, *, path: Path) -> tuple[dict[str, Any], ...]:
+    """Recompute each JUnit claim, then let pytest and isolation failures veto it."""
     results = []
     for case in root.iter("testcase"):
         properties = [
@@ -518,8 +545,24 @@ def read_mutation_results(path: Path) -> tuple[dict[str, Any], ...]:
             "passed",
         )
         result["pytest_outcome"] = outcome
-        if outcome != "passed" or not all(result[field] for field in ISOLATION_CHECKS):
+        result["artifact_path"] = path.as_posix()
+        result["testcase"] = "::".join(
+            part for part in (case.get("classname"), case.get("name")) if part
+        )
+        reasons = [result["rejection_reason"]] if result["rejection_reason"] else []
+        if outcome != "passed":
+            node = case.find(outcome)
+            assert node is not None
+            detail = "; ".join(
+                part.strip() for part in (node.get("message", ""), node.text or "") if part.strip()
+            )
+            reasons.append(f"pytest-{outcome}: {detail or 'no JUnit message'}")
+        failed_checks = [field for field in ISOLATION_CHECKS if not result[field]]
+        if failed_checks:
+            reasons.append(f"isolation-failed: {', '.join(failed_checks)}")
+        if outcome != "passed" or failed_checks:
             result["status"] = "error"
+        result["rejection_reason"] = "; ".join(reasons)
         results.append(result)
     return tuple(results)
 
@@ -535,7 +578,12 @@ def assert_complete_mutation_evidence(results: Iterable[dict[str, Any]]) -> None
             row["status"] == "killed"
             and row.get("pytest_outcome") == "passed"
             and all(row.get(field) is True for field in ISOLATION_CHECKS)
-        ), f"Unmet lifecycle mutation obligation {row['mutant_id']}: {row['status']}"
+        ), (
+            f"Unmet lifecycle mutation obligation {row['mutant_id']}: {row['status']}; "
+            f"{row.get('rejection_reason') or 'missing kill, passed pytest node, or isolation proof'}; "
+            f"artifact={row.get('artifact_path', 'unknown')}; "
+            f"testcase={row.get('testcase', 'unknown')}"
+        )
 
 
 if __name__ == "__main__":
