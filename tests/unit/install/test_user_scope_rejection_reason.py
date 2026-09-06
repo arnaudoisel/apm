@@ -155,7 +155,11 @@ def test_user_scope_handles_empty_local_path_defensively():
 def test_user_scope_accepts_proven_local_parent_anchor(tmp_path: Path, local_path: str) -> None:
     """A resolver-proven local child is anchored, not relative to arbitrary CWD."""
     parent = APMPackage(
-        name="parent", version="1.0.0", source="_local/parent", source_path=tmp_path
+        name="parent",
+        version="1.0.0",
+        source="_local/parent",
+        source_path=tmp_path,
+        proven_source_kind="local",
     )
     child = _local_ref(local_path)
     child.declaring_parent = tmp_path.as_posix()
@@ -173,6 +177,7 @@ def test_user_scope_accepts_proven_local_parent_anchor(tmp_path: Path, local_pat
         ("org/remote", "absolute", True, "../child"),
         ("https://example.invalid/remote", "absolute", True, "../child"),
         ("_local/parent", "absolute", True, ""),
+        ("_local/parent", "absolute", True, "../child"),
     ],
     ids=[
         "direct-ref",
@@ -182,6 +187,7 @@ def test_user_scope_accepts_proven_local_parent_anchor(tmp_path: Path, local_pat
         "remote-shorthand",
         "remote-url",
         "empty-path",
+        "local-looking-unknown-origin",
     ],
 )
 def test_user_scope_does_not_infer_local_parent_trust(

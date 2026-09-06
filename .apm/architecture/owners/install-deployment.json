@@ -97,9 +97,12 @@
     },
     {
       "id": "local-dependency-scope-admission",
-      "decision": "Local dependency admission at user scope",
-      "owner": "install/package_resolution.py (user_scope_rejection_reason)",
-      "selectors": ["src/apm_cli/install/package_resolution.py"],
+      "decision": "Declaring-source provenance and local dependency scope admission",
+      "owner": "deps/apm_resolver.py (_source_kind_for_dependency) projects acquisition provenance onto APMPackage; install/package_resolution.py (user_scope_rejection_reason) owns admission",
+      "selectors": [
+        "src/apm_cli/install/package_resolution.py",
+        "src/apm_cli/deps/apm_resolver.py"
+      ],
       "guards": ["install-deployment-local-scope-admission"]
     },
     {

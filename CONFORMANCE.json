@@ -486,7 +486,7 @@
       "keyword": "MUST",
       "section": "4.3.5",
       "status": "active",
-      "test_count": 36,
+      "test_count": 46,
       "tests": [
         "tests/spec_conformance/test_local_path_reqs.py::test_direct_local_source_is_anchored_before_copy[project-relative]",
         "tests/spec_conformance/test_local_path_reqs.py::test_direct_local_source_is_anchored_before_copy[user-absolute]",
@@ -512,6 +512,18 @@
         "tests/spec_conformance/test_local_path_reqs.py::test_remote_parent_cannot_expand_into_host_files[home]",
         "tests/spec_conformance/test_local_path_reqs.py::test_remote_parent_cannot_expand_into_host_files[symlink]",
         "tests/spec_conformance/test_local_path_reqs.py::test_remote_parent_cannot_expand_into_host_files[windows-absolute]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_paths_are_routed_before_local_admission[absolute-_local/parent-InstallScope.PROJECT]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_paths_are_routed_before_local_admission[absolute-_local/parent-InstallScope.USER]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_paths_are_routed_before_local_admission[absolute-org/repo-InstallScope.PROJECT]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_paths_are_routed_before_local_admission[absolute-org/repo-InstallScope.USER]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_paths_are_routed_before_local_admission[escape-_local/parent-InstallScope.PROJECT]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_paths_are_routed_before_local_admission[escape-_local/parent-InstallScope.USER]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_paths_are_routed_before_local_admission[escape-org/repo-InstallScope.PROJECT]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_paths_are_routed_before_local_admission[escape-org/repo-InstallScope.USER]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_paths_are_routed_before_local_admission[sibling-_local/parent-InstallScope.PROJECT]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_paths_are_routed_before_local_admission[sibling-_local/parent-InstallScope.USER]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_paths_are_routed_before_local_admission[sibling-org/repo-InstallScope.PROJECT]",
+        "tests/spec_conformance/test_local_path_reqs.py::test_remote_paths_are_routed_before_local_admission[sibling-org/repo-InstallScope.USER]",
         "tests/spec_conformance/test_local_path_reqs.py::test_remote_relative_child_retains_repository_and_ref[../child]",
         "tests/spec_conformance/test_local_path_reqs.py::test_remote_relative_child_retains_repository_and_ref[..\\\\child]",
         "tests/spec_conformance/test_local_path_reqs.py::test_selected_local_root_allows_only_internal_symlink_content[resolved-source-alias]",
@@ -521,9 +533,7 @@
         "tests/spec_conformance/test_local_path_reqs.py::test_user_relative_admission_requires_proven_local_parent[missing-parent]",
         "tests/spec_conformance/test_local_path_reqs.py::test_user_relative_admission_requires_proven_local_parent[missing-source]",
         "tests/spec_conformance/test_local_path_reqs.py::test_user_relative_admission_requires_proven_local_parent[relative-source]",
-        "tests/spec_conformance/test_local_path_reqs.py::test_user_relative_admission_requires_proven_local_parent[remote]",
-        "tests/spec_conformance/test_local_path_reqs.py::test_user_remote_paths_are_routed_before_local_admission[escape]",
-        "tests/spec_conformance/test_local_path_reqs.py::test_user_remote_paths_are_routed_before_local_admission[sibling]"
+        "tests/spec_conformance/test_local_path_reqs.py::test_user_relative_admission_requires_proven_local_parent[remote]"
       ]
     },
     {

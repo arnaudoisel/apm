@@ -70,6 +70,9 @@ Absolute paths, paths that escape the repo root, and cross-repo local paths
 are rejected.
 This remote expansion runs before operator-local user-scope admission: an
 accepted sibling remains a Git dependency, including during a global install.
+APM establishes that origin from acquisition context, not repository spelling;
+a remote repository named `_local/parent` is still remote. Missing provenance
+does not authorize a transitive local filesystem read.
 
 Local lock replay still needs the original declaring-source context. Relative
 spelling alone is not source identity or read authorization, and an absolute

@@ -64,6 +64,42 @@ def check_local_scope_admission(provider: FactsProvider) -> tuple[Violation, ...
     findings = list(failures)
     if not failures and not _present(owner, f"def {owner_name}("):
         findings.append(_summary(_GUARD_LOCAL_SCOPE, owner_path, "Missing local admission owner"))
+    if not failures and not _present(owner, 'parent_pkg.proven_source_kind == "local"'):
+        findings.append(
+            _summary(_GUARD_LOCAL_SCOPE, owner_path, "Local admission requires positive provenance")
+        )
+    resolver_path = "src/apm_cli/deps/apm_resolver.py"
+    resolver, failures = _facts_for(provider, resolver_path, _GUARD_LOCAL_SCOPE)
+    findings.extend(failures)
+    if not failures:
+        index = provider.tree_index(resolver_path)
+        calls = (
+            _attribute_calls(tuple(index.walk(index.root)), "_activate_validated_package")
+            if index is not None and index.root is not None
+            else []
+        )
+        if (
+            len(calls) != 4
+            or not all(
+                len(call.args) == 4
+                and isinstance(call.args[3], ast.Name)
+                and call.args[3].id == "dep_ref"
+                for call in calls
+            )
+            or not _present(
+                resolver, "proven_source_kind=self._source_kind_for_dependency(dep_ref)"
+            )
+            or not _present(resolver, "kind = self._source_kind_for_dependency(parent_dep)")
+            or not _present(resolver, 'parent_pkg.proven_source_kind != "local"')
+        ):
+            findings.append(
+                _summary(
+                    _GUARD_LOCAL_SCOPE,
+                    resolver_path,
+                    "All package load paths must project actual dependency origin; "
+                    "expansion and backstop must consume established provenance",
+                )
+            )
     consumers = (
         (_INSTALL_ADAPTER, "_resolve_package_references", False),
         ("src/apm_cli/install/phases/resolve.py", "download_callback", True),
