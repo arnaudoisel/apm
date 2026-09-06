@@ -328,14 +328,6 @@ MUTATIONS: tuple[MutationCase, ...] = (
     MutationCase(
         guard_id="install-deployment-local-scope-admission",
         rule_id="install-deployment-local-scope-admission",
-        path="src/apm_cli/install/phases/resolve.py",
-        old="user_scope_rejection_reason(dep_ref, scope, parent_pkg=parent_pkg)",
-        new="user_scope_rejection_reason(dep_ref, scope, parent_pkg=None)",
-        intent="Resolution drops the declaring local parent's source context from admission.",
-    ),
-    MutationCase(
-        guard_id="install-deployment-local-scope-admission",
-        rule_id="install-deployment-local-scope-admission",
         path="src/apm_cli/deps/apm_resolver.py",
         old="proven_source_kind=self._source_kind_for_dependency(dep_ref)",
         new='proven_source_kind="local"',
@@ -1119,6 +1111,21 @@ def test_owner_rules_report_nothing_before_mutation(
 ) -> None:
     """Every owner rule is clean at HEAD, so any violation below is the mutation."""
     assert baseline_violated_rule_ids == frozenset()
+
+
+def test_local_scope_guard_retains_declaring_parent_delegation() -> None:
+    """Retain the earlier admission mutation alongside the stronger provenance case."""
+    case = MutationCase(
+        guard_id="install-deployment-local-scope-admission",
+        rule_id="install-deployment-local-scope-admission",
+        path="src/apm_cli/install/phases/resolve.py",
+        old="user_scope_rejection_reason(dep_ref, scope, parent_pkg=parent_pkg)",
+        new="user_scope_rejection_reason(dep_ref, scope, parent_pkg=None)",
+        intent="Resolution drops the declaring local parent's source context from admission.",
+    )
+    report = run_selected_rules(ROOT, (case.rule_id,), source_overrides={case.path: _mutate(case)})
+    assert not report.failures
+    assert {finding.rule_id for finding in report.violations} == {case.rule_id}
 
 
 def test_git_semver_guard_rejects_bypassing_selected_attempt_requested_url() -> None:
