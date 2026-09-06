@@ -19,6 +19,8 @@ from click.testing import CliRunner, Result
 
 from apm_cli import config
 from apm_cli.cli import cli
+from apm_cli.install.audit_target_roots import resolve_audit_targets
+from apm_cli.integration.targets import resolve_targets
 from apm_cli.utils import console
 from apm_cli.utils.yaml_io import dump_yaml, load_yaml
 from tests.utils.artifact_snapshot import ArtifactSnapshot, assert_unchanged
@@ -396,3 +398,85 @@ def test_configured_target_does_not_authorize_invalid_owners(installed: _AuditPr
     dump_yaml(document, path)
     checks = installed.audit(1)
     assert checks["deployment-ledger-owners"]["passed"] is False
+
+
+@pytest.mark.req("req-lk-023")
+def test_saved_explicit_only_target_replays_without_detection(
+    installed: _AuditProject, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saved agent-skills intent is explicit selection, not a detection predicate."""
+    project = (
+        LocalPackageFactory(installed.project.parent)
+        .create("explicit-only-consumer", dependencies=[{"path": str(installed.source.parents[2])}])
+        .root
+    )
+    case = replace(installed, project=project)
+    monkeypatch.chdir(project)
+    manifest = load_yaml(project / "apm.yml")
+    assert "target" not in manifest and "targets" not in manifest
+    assert case.command("config", "set", "target", "agent-skills").exit_code == 0
+    result = case.command("install", "--no-policy", "--parallel-downloads", "0")
+    assert result.exit_code == 0, result.output
+    assert {target.name for target in resolve_audit_targets(project)} == {"agent-skills"}
+    assert "agent-skills" not in {
+        target.name for target in resolve_targets(project, create_config=False)
+    }
+    deployed = project / ".agents/skills/intent/SKILL.md"
+    assert deployed.read_bytes() == case.source.read_bytes()
+    assert all(check["passed"] for check in case.audit(0).values())
+
+
+class _KnownInternalLinkReplayGap(AssertionError):
+    """Only the demonstrated false-orphan outcome is an expected failure."""
+
+
+@pytest.mark.req("req-lk-023")
+@pytest.mark.xfail(
+    strict=True,
+    raises=_KnownInternalLinkReplayGap,
+    reason="Inherited replay omits an internal resource link dereferenced by local acquisition",
+)
+def test_admitted_internal_resource_link_survives_unchanged_audit(
+    installed: _AuditProject,
+) -> None:
+    """Acquired regular-file content should not become obsolete during replay."""
+    payload = installed.source.parent / "payload.txt"
+    payload.write_bytes(b"Internal resource payload\n")
+    (installed.source.parent / "linked.txt").symlink_to("payload.txt")
+    result = installed.command("install", "--no-policy", "--parallel-downloads", "0")
+    assert result.exit_code == 0, result.output
+    relative = ".grok/skills/intent/linked.txt"
+    deployed = installed.project / relative
+    assert deployed.is_file() and not deployed.is_symlink()
+    assert deployed.read_bytes() == payload.read_bytes()
+
+    project_before = ArtifactSnapshot.capture(installed.project)
+    home_before = ArtifactSnapshot.capture(installed.home)
+    result = installed.command("audit", "--ci", "--no-policy", "--no-fail-fast", "-f", "json")
+    assert_unchanged(project_before, ArtifactSnapshot.capture(installed.project))
+    assert_unchanged(home_before, ArtifactSnapshot.capture(installed.home))
+    checks = {row["name"]: row for row in json.loads(result.stdout)["checks"]}
+    assert checks["content-integrity"]["passed"] is True, checks
+    assert all(row["passed"] for name, row in checks.items() if name != "drift"), checks
+    if (
+        result.exit_code == 1
+        and checks["drift"]["passed"] is False
+        and checks["drift"]["details"] == [f"orphaned: {relative}"]
+    ):
+        raise _KnownInternalLinkReplayGap(
+            "Unchanged CI audit must preserve admitted linked.txt content, not report it orphaned"
+        )
+    assert result.exit_code == 0, result.output
+    assert checks["drift"]["passed"] is True
+
+
+@pytest.mark.req("req-mf-016")
+def test_local_resource_escape_is_rejected_before_audit(installed: _AuditProject) -> None:
+    """The replay limitation does not permit acquiring an escaping resource link."""
+    outside = installed.source.parents[2].parent / "outside.txt"
+    outside.write_bytes(b"Outside selected package\n")
+    (installed.source.parent / "escaped.txt").symlink_to(outside)
+    result = installed.command("install", "--no-policy", "--parallel-downloads", "0")
+    assert result.exit_code != 0, result.output
+    assert outside.read_bytes() == b"Outside selected package\n"
+    assert not (installed.project / ".grok/skills/intent/escaped.txt").exists()

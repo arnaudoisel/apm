@@ -238,6 +238,10 @@ closed. Missing ownership never removes source-derived expectations. See the
 [audit reference](https://microsoft.github.io/apm/reference/cli/audit/#drift-detection)
 for target prerequisites and replay boundaries.
 
+Known replay limitation: an internal local resource link copied as a regular
+file during install can be falsely reported as `orphaned` by unchanged CI audit.
+Escaping resource links remain rejected; this is not a containment exception.
+
 | Command | Purpose | Key flags |
 |---------|---------|-----------|
 | `apm audit [PKG]` | Scan installed primitives for hidden Unicode, drift, and lockfile/policy violations | `--file PATH`, `--strip`, `--dry-run`, `-v`, `-f [text\|json\|sarif\|md]`, `-o PATH`, `--ci`, `--policy SOURCE`, `--no-cache`, `--no-fail-fast`, `--no-drift`, `--external NAME` (experimental; ingest a third-party SARIF scanner, e.g. `skillspector`), `--external-sarif PATH`, `--external-llm/--no-external-llm`, `--external-args TEXT` |

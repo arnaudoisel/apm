@@ -205,6 +205,11 @@ modify their database or sidecars.
 Audit leaves absent user configuration absent and existing configuration
 unchanged, including during package parsing, MCP inspection, and content scanning.
 
+Known limitation: a local package's internal resource symlink can install as
+regular-file content yet be reported as `orphaned` by unchanged CI audit.
+This is a replay mismatch, not permission to follow escaping links.
+See the [conformance limitations](../../../specs/conformance/#what-conformance-does-not-cover).
+
 The default audit replays the install pipeline into a scratch tree and diffs
 the result against the working tree. It catches hand-edits, missing
 integrations, orphaned files, and `unrecorded` files. `unrecorded` applies when
