@@ -4,7 +4,9 @@
     "manifest_location": "~/.apm/apm.yml",
     "target_capability_declaration": "MCPClientAdapter.supports_user_scope (OpenAPM Target Registry v0.1 implementation profile)"
   },
-  "generator": "gen_statement.py v1",
+  "generator": "gen_statement.py v2",
+  "inventory_kind": "static-test-bindings",
+  "manifest_sha256": "1b9d032b871b4b59c93b5e2548b80dc53a002cbe21c6f4dbb83dec3cdf128cfb",
   "requirements": [
     {
       "conformance_class": "consumer",
@@ -259,7 +261,7 @@
         "tests/spec_conformance/test_lockfile_reqs.py::test_lockfile_should_record_publish_timestamp"
       ],
       "waivers": [
-        "Publish-timestamp recording is a publisher-side SHOULD that requires registry interaction to exercise end-to-end. The schema affordance (generated_at) is asserted above; full publisher coverage requires the registry wire conformance module which is not in v0.1 scope."
+        "Publish-timestamp recording is a publisher-side SHOULD that requires registry interaction to exercise end-to-end. The schema affordance (generated_at) is asserted above; full publisher coverage requires the registry wire conformance module which remains outside this revision's scope."
       ]
     },
     {
@@ -576,7 +578,7 @@
       "status": "active",
       "test_count": 1,
       "tests": [
-        "tests/spec_conformance/test_manifest_reqs.py::test_producer_workspaces_must_not_use_in_v0_1"
+        "tests/spec_conformance/test_manifest_reqs.py::test_producer_workspaces_remain_reserved"
       ]
     },
     {
@@ -1442,7 +1444,10 @@
       ]
     }
   ],
-  "spec_version": "v0.1.1",
+  "spec_citation": "https://microsoft.github.io/apm/spec/v0.2.0",
+  "spec_path": "docs/src/content/docs/specs/openapm-v0.2.md",
+  "spec_sha256": "2b673cd6404635d8ec8ee783a60abd6ad4ad94d0e257e2b59c2c3600c743d99e",
+  "spec_version": "v0.2.0",
   "summary_by_class": {
     "consumer": {
       "active": 91,

@@ -190,6 +190,14 @@ MUTATIONS: tuple[MutationCase, ...] = (
         intent="Root context writes lose the canonical hand-authored ownership gate.",
     ),
     MutationCase(
+        guard_id="contracts-tooling-spec-assessment",
+        rule_id="contracts-tooling-spec-assessment",
+        path="tests/spec_conformance/_helpers.py",
+        old="selected_assessment().spec_path",
+        new="local_assessment().spec_path",
+        intent="Spec-text helper stops using the canonical selected assessment.",
+    ),
+    MutationCase(
         guard_id="hooks-integrations-copilot-cli-mcp-paths",
         rule_id="mutation_writes.copilot_cli_mcp_paths",
         path="src/apm_cli/adapters/client/copilot.py",
