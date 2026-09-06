@@ -689,6 +689,14 @@ MUTATIONS: tuple[MutationCase, ...] = (
         intent="Direct Artifactory entry requests regain ambient netrc credentials.",
     ),
     MutationCase(
+        guard_id="transport-platform-clone-connect-retry",
+        rule_id="transport-platform-clone-connect-retry",
+        path="src/apm_cli/deps/clone_engine.py",
+        old="def _is_connect_failure(",
+        new="def _is_connect_failure_disabled(",
+        intent="CloneEngine loses the bounded HTTPS connection-retry classifier.",
+    ),
+    MutationCase(
         guard_id="transport-platform-git-cache-identity",
         rule_id="transport-platform-git-cache-identity",
         path="src/apm_cli/deps/shared_clone_cache.py",
