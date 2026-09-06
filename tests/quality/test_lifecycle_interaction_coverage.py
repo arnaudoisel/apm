@@ -4,7 +4,7 @@ import itertools
 import json
 import shlex
 import xml.etree.ElementTree as ET
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -20,6 +20,7 @@ from tests.utils.lifecycle_interactions import (
     TRANSITION_ROWS,
     CaseExecution,
     RoutingRow,
+    TripleObligation,
     assert_complete_evidence,
     candidate_rows,
     catalog_rows,
@@ -40,6 +41,28 @@ from tests.workflow_contracts import load_workflow, shell_tokens, workflow_job, 
 RATCHET_TEST_SCOPE = "repository"
 pytestmark = pytest.mark.component
 _ALL_ROWS = (*ROUTING_ROWS, *INTERACTION_ROWS)
+_REVIEWED_TRIPLE_OBLIGATIONS = {
+    (
+        "aliased-ref-warm-update",
+        (("cache_state", "warm"), ("command", "update"), ("ref_state", "tag")),
+    ),
+    (
+        "user-instructions-reinstall",
+        (("command", "reinstall"), ("primitive", "instructions"), ("scope", "user")),
+    ),
+    (
+        "tampered-transitive-audit",
+        (("command", "audit"), ("dependency_shape", "transitive"), ("integrity_state", "tampered")),
+    ),
+}
+
+
+def _assert_reviewed_triple_obligations(triples: tuple[TripleObligation, ...]) -> None:
+    """Keep the reviewed risk content independent of generator/report inputs."""
+    actual = {(triple.id, tuple(sorted(triple.values))) for triple in triples}
+    assert len(triples) == len(actual) and actual == _REVIEWED_TRIPLE_OBLIGATIONS, (
+        "Reviewed high-risk triple obligations changed"
+    )
 
 
 def test_lifecycle_routing_cells_cover_the_live_target_catalog() -> None:
@@ -127,6 +150,7 @@ def test_semantic_constraints_reject_impossible_or_unknown_states(
 
 
 def test_selection_is_deterministic_and_covers_ledger_driven_triples() -> None:
+    _assert_reviewed_triple_obligations(HIGH_RISK_TRIPLES)
     generate_interaction_rows.cache_clear()
     assert generate_interaction_rows() == INTERACTION_ROWS
     ids = [row.id for row in _ALL_ROWS]
@@ -134,6 +158,72 @@ def test_selection_is_deterministic_and_covers_ledger_driven_triples() -> None:
     assert len(INTERACTION_ROWS) < len(candidate_rows())
     for triple in HIGH_RISK_TRIPLES:
         assert any(set(triple.values) <= set(factors(row)) for row in _ALL_ROWS), triple.id
+
+
+@pytest.mark.parametrize(
+    ("triple_id", "factor", "substitute"),
+    (
+        ("aliased-ref-warm-update", "cache_state", "cold"),
+        ("user-instructions-reinstall", "scope", "project"),
+        ("tampered-transitive-audit", "dependency_shape", "direct"),
+    ),
+)
+@pytest.mark.parametrize("corruption", ("deletion", "legal-substitution"))
+def test_reviewed_triple_guard_rejects_deleted_or_substituted_obligations(
+    triple_id: str, factor: str, substitute: str, corruption: str
+) -> None:
+    _assert_reviewed_triple_obligations(HIGH_RISK_TRIPLES)
+    original = next(triple for triple in HIGH_RISK_TRIPLES if triple.id == triple_id)
+    if corruption == "deletion":
+        changed = tuple(triple for triple in HIGH_RISK_TRIPLES if triple.id != triple_id)
+    else:
+        replacement = replace(
+            original,
+            values=tuple(
+                (name, substitute if name == factor else value) for name, value in original.values
+            ),
+        )
+        assert any(set(replacement.values) <= set(factors(row)) for row in candidate_rows())
+        changed = tuple(
+            replacement if triple.id == triple_id else triple for triple in HIGH_RISK_TRIPLES
+        )
+        assert len(changed) == len(HIGH_RISK_TRIPLES)
+    with pytest.raises(AssertionError, match="Reviewed high-risk triple obligations changed"):
+        _assert_reviewed_triple_obligations(changed)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    (
+        ("catalog-cold", set()),
+        ("catalog-warm", {"remove-materialization", "warm-materialize"}),
+        ("generated-cold", {"clear-cache"}),
+        ("generated-warm", {"remove-materialization", "warm-materialize"}),
+        ("generated-local", set()),
+        ("refusal-warm", set()),
+        ("generated-refusal-cold", set()),
+    ),
+)
+def test_cache_action_requirements_match_driver_applicability(
+    case: str, expected: set[str]
+) -> None:
+    cell = catalog_rows()[0]
+    generated = replace(cell, id="interaction-cache-contract", catalog_cell=False)
+    rows = {
+        "catalog-cold": cell,
+        "catalog-warm": replace(cell, cache_state="warm"),
+        "generated-cold": generated,
+        "generated-warm": replace(generated, cache_state="warm"),
+        "generated-local": replace(
+            generated, source_kind="local", ref_state="none", cache_state="none"
+        ),
+        "refusal-warm": replace(DYNAMIC_REFUSAL_ROWS[0], cache_state="warm"),
+        "generated-refusal-cold": replace(
+            DYNAMIC_REFUSAL_ROWS[0], id="interaction-refusal-contract"
+        ),
+    }
+    cache_actions = {"remove-materialization", "warm-materialize", "clear-cache"}
+    assert required_transitions(rows[case]) & cache_actions == expected
 
 
 def test_campaign_laws_and_named_exceptions_have_ledger_backing() -> None:
@@ -279,14 +369,59 @@ def test_nonexecuted_or_known_gap_evidence_earns_no_credit(status: str) -> None:
     assert report["rejected_evidence"][row.id]["status"] == status
 
 
-@pytest.mark.parametrize("field", ("evaluated_laws", "transitions"))
-def test_disabling_assertions_or_actions_loses_execution_credit(field: str) -> None:
-    row = INTERACTION_ROWS[0]
+@pytest.mark.parametrize(
+    ("field", "cache_state", "omitted_action"),
+    (
+        ("evaluated_laws", None, None),
+        ("transitions", None, None),
+        ("transitions", "warm", "remove-materialization"),
+        ("transitions", "warm", "warm-materialize"),
+        ("transitions", "cold", "clear-cache"),
+    ),
+)
+def test_disabling_assertions_or_actions_loses_execution_credit(
+    tmp_path: Path, field: str, cache_state: str | None, omitted_action: str | None
+) -> None:
+    row = next(
+        row for row in INTERACTION_ROWS if cache_state is None or row.cache_state == cache_state
+    )
+    complete = _execution(row)
+    positive = coverage_report(
+        _ALL_ROWS, _roundtrip_execution(tmp_path, complete), input_revision="test-fixture"
+    )
+    assert positive["covered_pairs"]
+    assert positive["rejected_evidence"] == {}
+    remaining = (
+        tuple(step for step in complete.transitions if step != omitted_action)
+        if omitted_action is not None
+        else ()
+    )
     report = coverage_report(
-        _ALL_ROWS, (_execution(row, **{field: ()}),), input_revision="test-fixture"
+        _ALL_ROWS,
+        _roundtrip_execution(tmp_path, replace(complete, **{field: remaining})),
+        input_revision="test-fixture",
     )
     assert report["covered_pairs"] == []
     assert row.id in report["rejected_evidence"]
+    if omitted_action is not None:
+        rejection = report["rejected_evidence"][row.id]
+        assert rejection["missing_transitions"] == [omitted_action]
+        assert rejection["missing_laws"] == []
+
+
+def _roundtrip_execution(path: Path, evidence: CaseExecution) -> tuple[CaseExecution, ...]:
+    """Exercise the real JUnit reader before assigning interaction credit."""
+    root = ET.Element("testsuite")
+    case = ET.SubElement(root, "testcase", name=evidence.case_id)
+    properties = ET.SubElement(case, "properties")
+    ET.SubElement(
+        properties, "property", name="lifecycle_execution", value=json.dumps(asdict(evidence))
+    )
+    junit = path / "cache-contract.xml"
+    ET.ElementTree(root).write(junit)
+    observed = read_executions(junit)
+    assert observed == (evidence,)
+    return observed
 
 
 def test_report_rejects_duplicate_unknown_and_invalid_execution_records() -> None:
@@ -353,6 +488,148 @@ def test_junit_result_overrules_earlier_success_evidence(
     assert bool(report["covered_pairs"]) is (pytest_status is None)
 
 
+@pytest.mark.parametrize("pytest_status", ("failure", "error", "skipped"))
+@pytest.mark.parametrize("reason", (None, "audit: missing authorized fixture"))
+def test_junit_veto_preserves_original_diagnostic_and_artifact_context(
+    tmp_path: Path, pytest_status: str, reason: str | None
+) -> None:
+    root = ET.Element("testsuite")
+    case = ET.SubElement(root, "testcase", classname="fixture.module", name="audit-case")
+    properties = ET.SubElement(case, "properties")
+    evidence = _execution(INTERACTION_ROWS[0], reason=reason)
+    ET.SubElement(
+        properties, "property", name="lifecycle_execution", value=json.dumps(asdict(evidence))
+    )
+    ET.SubElement(case, pytest_status, message="final assertion").text = "raw assertion detail"
+    path = tmp_path / "shard.xml"
+    ET.ElementTree(root).write(path)
+    execution = read_executions(path)[0]
+    assert execution.status == ("skipped" if pytest_status == "skipped" else "failed")
+    expected = (
+        f"pytest-{pytest_status}: final assertion; raw assertion detail; "
+        f"artifact={path.as_posix()}; testcase=fixture.module::audit-case"
+    )
+    assert execution.reason == (f"{reason}; {expected}" if reason else expected)
+    report = coverage_report(_ALL_ROWS, (execution,), input_revision="test-fixture")
+    assert report["rejected_evidence"][evidence.case_id]["reason"] == execution.reason
+    assert report["covered_pairs"] == []
+
+
+@pytest.mark.parametrize("artifact_count", (2, 20))
+def test_combined_report_parses_each_artifact_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artifact_count: int
+) -> None:
+    from tests.utils.lifecycle_mutations import mutation_report
+
+    shard_dir = tmp_path / "shards"
+    shard_dir.mkdir()
+    expected_executions = []
+    paths = []
+    for index, row in enumerate(_ALL_ROWS[:artifact_count]):
+        root = ET.Element("testsuite")
+        case = ET.SubElement(root, "testcase", name=row.id)
+        properties = ET.SubElement(case, "properties")
+        ET.SubElement(
+            properties,
+            "property",
+            name="lifecycle_execution",
+            value=json.dumps(asdict(_execution(row))),
+        )
+        if index == 0:
+            ET.SubElement(case, "failure", message="later failure")
+        path = shard_dir / f"shard-{index:02d}.xml"
+        ET.ElementTree(root).write(path)
+        paths.append(path)
+        expected_executions.extend(read_executions(path))
+    output, mutations = tmp_path / "interactions.json", tmp_path / "mutations.json"
+    parse = ET.parse
+    parsed_paths = []
+
+    def counted_parse(path: Path) -> ET.ElementTree:
+        parsed_paths.append(path)
+        return parse(path)
+
+    monkeypatch.setattr(ET, "parse", counted_parse)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "lifecycle-report",
+            "--junit-dir",
+            str(shard_dir),
+            "--revision",
+            "test-fixture",
+            "--output",
+            str(output),
+            "--mutation-output",
+            str(mutations),
+        ],
+    )
+    report_main()
+    assert parsed_paths == paths
+    report = json.loads(output.read_text(encoding="ascii"))
+    expected = coverage_report(_ALL_ROWS, expected_executions, input_revision="test-fixture")
+    assert {key: report[key] for key in expected} == json.loads(json.dumps(expected))
+    assert report["executions"] == json.loads(
+        json.dumps(
+            [
+                asdict(execution)
+                for execution in sorted(expected_executions, key=lambda e: e.case_id)
+            ]
+        )
+    )
+    assert json.loads(mutations.read_text(encoding="ascii")) == {
+        **mutation_report(()),
+        "input_revision": "test-fixture",
+    }
+
+
+@pytest.mark.parametrize("invalid_index", (0, 1))
+def test_invalid_mutation_still_preserves_complete_interaction_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_index: int
+) -> None:
+    paths = []
+    rows = _ALL_ROWS[:2]
+    for index, row in enumerate(rows):
+        root = ET.Element("testsuite")
+        case = ET.SubElement(root, "testcase", name=row.id)
+        properties = ET.SubElement(case, "properties")
+        ET.SubElement(
+            properties,
+            "property",
+            name="lifecycle_execution",
+            value=json.dumps(asdict(_execution(row))),
+        )
+        if index == invalid_index:
+            ET.SubElement(properties, "property", name="lifecycle_mutation", value="{}")
+        path = tmp_path / f"shard-{index}.xml"
+        ET.ElementTree(root).write(path)
+        paths.append(path)
+    output, mutations = tmp_path / "interactions.json", tmp_path / "mutations.json"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "lifecycle-report",
+            "--junit",
+            *(str(path) for path in paths),
+            "--revision",
+            "test-fixture",
+            "--output",
+            str(output),
+            "--mutation-output",
+            str(mutations),
+            "--require-mutations",
+            "--require-complete",
+        ],
+    )
+    with pytest.raises(ValueError, match="Malformed lifecycle mutation report") as error:
+        report_main()
+    assert str(paths[invalid_index]) in str(error.value)
+    assert output.is_file(), "Valid interaction evidence was not saved before mutation failure"
+    report = json.loads(output.read_text(encoding="ascii"))
+    assert {execution["case_id"] for execution in report["executions"]} == {row.id for row in rows}
+    assert not mutations.exists()
+
+
 def test_ci_uploads_observed_lifecycle_evidence_even_after_test_failure() -> None:
     path = Path(__file__).resolve().parents[2] / ".github/workflows/ci-integration.yml"
     workflow = load_workflow(path)
@@ -390,6 +667,9 @@ def test_ci_uploads_observed_lifecycle_evidence_even_after_test_failure() -> Non
     }
     assert upload["with"]["retention-days"] >= 7
     fan_in = workflow_job(workflow, "integration-tests")
+    install = workflow_step(fan_in, "Install lifecycle report dependencies")
+    assert shell_tokens(install) == ["uv", "sync", "--frozen"]
+    assert sum(step.get("name") == install["name"] for step in fan_in["steps"]) == 1
     download = workflow_step(fan_in, "Download lifecycle evidence")
     assert download["with"]["pattern"] == "lifecycle-evidence-shard-*"
     assert download["with"].get("merge-multiple", False) is False
@@ -400,6 +680,7 @@ def test_ci_uploads_observed_lifecycle_evidence_even_after_test_failure() -> Non
     assert "--junit-dir" in shell_tokens(combined)
     assert "--require-mutations" in shell_tokens(combined)
     assert "--mutation-output" in shell_tokens(combined)
+    assert shell_tokens(combined)[:5] == ["uv", "run", "--frozen", "--no-sync", "python"]
     combined_upload = workflow_step(fan_in, "Upload combined lifecycle evidence")
     assert combined_upload["if"] == "always()"
     assert set(combined_upload["with"]["path"].splitlines()) == {

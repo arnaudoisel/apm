@@ -83,6 +83,32 @@ _LAW_TRANSITIONS = {
     FAILED_COMMAND: "audit_tampered",
     READ_ONLY: "dry_run",
 }
+_REVIEWED_DESIGNED_REPLAYS = {
+    "designed-declaration-roundtrip-before-install": (
+        "remove_declaration",
+        "readd_declaration",
+        "dry_run",
+        "install",
+        "audit_clean",
+    ),
+    "designed-tampered-declaration-roundtrip": (
+        "install",
+        "tamper",
+        "remove_declaration",
+        "readd_declaration",
+        "audit_tampered",
+        "repair",
+        "reinstall",
+    ),
+}
+
+
+def _assert_reviewed_designed_replays(cases: tuple[ReplayCase, ...]) -> None:
+    """Pin the two reviewed designs without closing the generic corpus format."""
+    actual = {case.case_id: case.sequence for case in cases[1:]}
+    assert _REVIEWED_DESIGNED_REPLAYS.items() <= actual.items(), (
+        "Reviewed designed replay obligations changed"
+    )
 
 
 def _write(root: Path, path: str, content: bytes) -> None:
@@ -364,6 +390,49 @@ def test_illegal_action_does_not_touch_the_fixture(tmp_path: Path) -> None:
     assert observe(driver.roots) == before
     assert results == []
     assert driver.evidence()["transitions"] == []
+
+
+def test_checked_in_corpus_preserves_both_designed_replays() -> None:
+    _assert_reviewed_designed_replays(load_corpus())
+
+
+@pytest.mark.parametrize("case_id", tuple(_REVIEWED_DESIGNED_REPLAYS))
+@pytest.mark.parametrize("corruption", ("deletion", "legal-shortening"))
+def test_reviewed_replay_guard_rejects_deleted_or_shortened_designs(
+    tmp_path: Path, case_id: str, corruption: str
+) -> None:
+    _assert_reviewed_designed_replays(load_corpus())
+    payload = json.loads(CORPUS_PATH.read_text(encoding="ascii"))
+    if corruption == "deletion":
+        payload["regressions"] = [
+            case for case in payload["regressions"] if case["case_id"] != case_id
+        ]
+    else:
+        case = next(case for case in payload["regressions"] if case["case_id"] == case_id)
+        case["sequence"] = [
+            step
+            for step in case["sequence"]
+            if step not in {"remove_declaration", "readd_declaration"}
+        ]
+    path = tmp_path / "changed-designs.json"
+    path.write_text(json.dumps(payload), encoding="ascii")
+    cases = load_corpus(path)
+    with pytest.raises(AssertionError, match="Reviewed designed replay obligations changed"):
+        _assert_reviewed_designed_replays(cases)
+
+
+def test_generic_corpus_accepts_additional_and_alternative_replays(tmp_path: Path) -> None:
+    payload = json.loads(CORPUS_PATH.read_text(encoding="ascii"))
+    additional = {**payload["regressions"][0], "case_id": "additional-legal-replay"}
+    payload["regressions"].append(additional)
+    path = tmp_path / "extensible-corpus.json"
+    path.write_text(json.dumps(payload), encoding="ascii")
+    cases = load_corpus(path)
+    _assert_reviewed_designed_replays(cases)
+    assert cases[-1].case_id == additional["case_id"]
+    payload["regressions"] = [additional]
+    path.write_text(json.dumps(payload), encoding="ascii")
+    assert [case.case_id for case in load_corpus(path)[1:]] == [additional["case_id"]]
 
 
 @pytest.mark.parametrize(

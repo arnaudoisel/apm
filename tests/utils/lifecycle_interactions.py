@@ -367,6 +367,10 @@ def required_transitions(row: RoutingRow) -> frozenset[str]:
     if row.dynamic_refusal:
         return frozenset({"install", "refusal"})
     transitions = {"install", "uninstall", row.command}
+    if row.cache_state == "warm":
+        transitions.update({"remove-materialization", "warm-materialize"})
+    elif row.cache_state == "cold" and row.id.startswith("interaction-"):
+        transitions.add("clear-cache")
     if row.widen_targets:
         transitions.update({"widen", "reinstall-widened"})
     if row.narrow_targets:

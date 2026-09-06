@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import xml.etree.ElementTree as ET
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from tests.utils.lifecycle_interactions import (
@@ -18,7 +18,7 @@ from tests.utils.lifecycle_interactions import (
 )
 from tests.utils.lifecycle_mutations import (
     assert_complete_mutation_evidence,
-    read_mutation_results,
+    read_mutation_results_from_root,
 )
 from tests.utils.lifecycle_mutations import (
     write_report as write_mutation_report,
@@ -26,8 +26,13 @@ from tests.utils.lifecycle_mutations import (
 
 
 def read_executions(path: Path) -> tuple[CaseExecution, ...]:
-    """Read only explicit witnesses, downgrading any failed or skipped pytest node."""
+    """Parse JUnit once and read its explicit interaction witnesses."""
     root = ET.parse(path).getroot()  # noqa: S314 - Input is local pytest-generated JUnit.
+    return read_executions_from_root(root, path=path)
+
+
+def read_executions_from_root(root: ET.Element, *, path: Path) -> tuple[CaseExecution, ...]:
+    """Read witnesses without reparsing, retaining diagnostics when pytest vetoes credit."""
     executions = []
     for case in root.iter("testcase"):
         properties = [
@@ -42,13 +47,28 @@ def read_executions(path: Path) -> tuple[CaseExecution, ...]:
         payload = json.loads(properties[0])
         if not isinstance(payload, dict):
             raise ValueError(f"Lifecycle evidence in {path} must be an object")
-        if case.find("failure") is not None or case.find("error") is not None:
-            payload["status"] = "failed"
-            payload["reason"] = "pytest node failed after recording lifecycle evidence"
-        elif case.find("skipped") is not None:
-            payload["status"] = "skipped"
-            payload["reason"] = "pytest node skipped or expected to fail"
-        executions.append(execution_from_mapping(payload))
+        execution = execution_from_mapping(payload)
+        outcome = next(
+            (kind for kind in ("failure", "error", "skipped") if case.find(kind) is not None),
+            None,
+        )
+        if outcome is not None:
+            node = case.find(outcome)
+            assert node is not None
+            detail = "; ".join(
+                part.strip() for part in (node.get("message", ""), node.text or "") if part.strip()
+            )
+            identity = "::".join(part for part in (case.get("classname"), case.get("name")) if part)
+            veto = (
+                f"pytest-{outcome}: {detail or 'no JUnit message'}; "
+                f"artifact={path.as_posix()}; testcase={identity or 'unnamed'}"
+            )
+            execution = replace(
+                execution,
+                status="skipped" if outcome == "skipped" else "failed",
+                reason="; ".join(part for part in (execution.reason, veto) if part),
+            )
+        executions.append(execution)
     return tuple(executions)
 
 
@@ -73,7 +93,17 @@ def main() -> None:
     )
     if not paths:
         raise ValueError("No lifecycle JUnit artifacts found")
-    executions = tuple(execution for path in paths for execution in read_executions(path))
+    executions = []
+    mutation_results = []
+    mutation_errors: list[tuple[Path, ValueError]] = []
+    for path in paths:
+        root = ET.parse(path).getroot()  # noqa: S314 - Local pytest-generated JUnit.
+        executions.extend(read_executions_from_root(root, path=path))
+        if arguments.mutation_output is not None:
+            try:
+                mutation_results.extend(read_mutation_results_from_root(root, path=path))
+            except ValueError as error:
+                mutation_errors.append((path, error))
     report = coverage_report(
         (*ROUTING_ROWS, *INTERACTION_ROWS),
         executions,
@@ -98,8 +128,12 @@ def main() -> None:
         f"unexecuted cases: {len(report['unexecuted_case_ids'])}; "
         f"rejected evidence: {len(report['rejected_evidence'])}"
     )
+    if mutation_errors:
+        details = "; ".join(f"{path}: {error}" for path, error in mutation_errors)
+        raise ValueError(f"Invalid lifecycle mutation artifacts: {details}") from mutation_errors[
+            0
+        ][1]
     if arguments.mutation_output is not None:
-        mutation_results = tuple(result for path in paths for result in read_mutation_results(path))
         mutation_report = write_mutation_report(
             arguments.mutation_output,
             mutation_results,
