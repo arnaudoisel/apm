@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -25,6 +28,34 @@ from tests.spec_conformance._helpers import load_yaml_fixture
 from tests.utils.local_package import LocalPackageFactory
 
 pytestmark = pytest.mark.component
+
+
+@contextmanager
+def _resolved_scope(
+    manifest: Path, scope: InstallScope, downloader: MagicMock | None = None
+) -> Iterator[InstallContext]:
+    """Run the real resolution phase with fixture transport and scoped storage."""
+    root = manifest.parent
+    package = APMPackage.from_apm_yml(manifest, source_path=root)
+    modules = root / "apm_modules"
+    modules.mkdir()
+    ctx = InstallContext(
+        project_root=root,
+        apm_dir=root,
+        apm_package=package,
+        scope=scope,
+        all_apm_deps=package.get_apm_dependencies(),
+        apm_modules_dir=modules,
+        ref_freshness_policy=RefFreshnessPolicy.REPRODUCIBLE,
+        downloader=downloader if downloader is not None else MagicMock(shared_clone_cache=None),
+        diagnostics=DiagnosticCollector(),
+    )
+    staging = ResolutionStagingSession(modules)
+    try:
+        _resolve_dependencies(ctx, staging, _materialization.CachedMaterializationPathReader())
+        yield ctx
+    finally:
+        staging.rollback()
 
 
 @pytest.mark.req("req-mf-016")
@@ -56,23 +87,8 @@ def test_local_sibling_uses_original_source_in_each_scope(
     decoy = LocalPackageFactory(unrelated).create("child")
     (unrelated / "cwd").mkdir()
     monkeypatch.chdir(unrelated / "cwd")
-    package = APMPackage.from_apm_yml(consumer.manifest_path, source_path=consumer.root)
-    modules = consumer.root / "apm_modules"
-    modules.mkdir()
-    ctx = InstallContext(
-        project_root=consumer.root,
-        apm_dir=consumer.root,
-        apm_package=package,
-        scope=scope,
-        all_apm_deps=package.get_apm_dependencies(),
-        apm_modules_dir=modules,
-        ref_freshness_policy=RefFreshnessPolicy.REPRODUCIBLE,
-        downloader=MagicMock(shared_clone_cache=None),
-        diagnostics=DiagnosticCollector(),
-    )
-    staging = ResolutionStagingSession(modules)
-    try:
-        _resolve_dependencies(ctx, staging, _materialization.CachedMaterializationPathReader())
+    with _resolved_scope(consumer.manifest_path, scope) as ctx:
+        modules = ctx.apm_modules_dir
         assert not ctx.callback_failures
         assert {dep.repo_url for dep in ctx.deps_to_install} == {"_local/parent", "_local/child"}
         child_ref = next(dep for dep in ctx.deps_to_install if dep.repo_url == "_local/child")
@@ -97,8 +113,152 @@ def test_local_sibling_uses_original_source_in_each_scope(
             == source.read_bytes()
         )
         ctx.downloader.download_package.assert_not_called()
-    finally:
-        staging.rollback()
+
+
+@pytest.mark.req("req-mf-016")
+def test_user_multihop_chain_keeps_each_original_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Grandchildren resolve from their immediate source parent, never an ancestor."""
+    first = LocalPackageFactory(tmp_path / "sources" / "first")
+    second = LocalPackageFactory(tmp_path / "sources" / "second")
+    grandchild = second.create("grandchild")
+    child = second.create("child", dependencies=[{"path": "../grandchild"}])
+    parent = first.create("parent", dependencies=[{"path": "../../second/child"}])
+    ancestor_decoy = first.create("grandchild", version="9.9.9")
+    unrelated = LocalPackageFactory(tmp_path / "unrelated")
+    cwd_decoy = unrelated.create("grandchild", version="8.8.8")
+    cwd = unrelated.create("cwd")
+    monkeypatch.chdir(cwd.root)
+    consumer = LocalPackageFactory(tmp_path / "user").create(
+        "consumer", dependencies=[{"path": parent.root.as_posix()}]
+    )
+    with _resolved_scope(consumer.manifest_path, InstallScope.USER) as ctx:
+        assert not ctx.callback_failures
+        refs = {dep.repo_url: dep for dep in ctx.deps_to_install}
+        assert set(refs) == {"_local/parent", "_local/child", "_local/grandchild"}
+        for package, declaring, spelling in (
+            (child, parent, "../../second/child"),
+            (grandchild, child, "../grandchild"),
+        ):
+            ref = refs[f"_local/{package.name}"]
+            node = ctx.dependency_graph.dependency_tree.get_node(ref.get_unique_key())
+            assert node.parent.package.source_path == declaring.root
+            assert node.package.source_path == package.root
+            assert ctx.dep_base_dirs[ref.get_unique_key()] == declaring.root
+            assert ref.local_path == spelling
+            assert ref.anchored_local_path == package.root.as_posix()
+            materialized = LocalDependencySource(
+                ctx, ref, ref.get_install_path(ctx.apm_modules_dir), ref.get_unique_key()
+            ).acquire()
+            assert materialized is not None
+            assert materialized.package_info.package.source_path == package.root
+            assert (materialized.install_path / "apm.yml").read_bytes() == (
+                package.manifest_path.read_bytes()
+            )
+        assert ancestor_decoy.manifest_path.is_file()
+        assert cwd_decoy.manifest_path.is_file()
+        assert (
+            refs["_local/grandchild"]
+            .get_install_path(ctx.apm_modules_dir)
+            .joinpath("apm.yml")
+            .read_bytes()
+            != ancestor_decoy.manifest_path.read_bytes()
+        )
+        ctx.downloader.download_package.assert_not_called()
+
+
+@pytest.mark.req("req-mf-016")
+def test_missing_user_anchor_does_not_use_other_scope_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recorded identity and a matching project installation do not authorize replay."""
+    factory = LocalPackageFactory(tmp_path / "sources")
+    child = factory.create("child")
+    parent = factory.create("parent", dependencies=[{"path": "../child"}])
+    consumer = LocalPackageFactory(tmp_path / "user").create(
+        "consumer", dependencies=[{"path": parent.root.as_posix()}]
+    )
+    project = LocalPackageFactory(tmp_path / "project").create("consumer")
+    monkeypatch.chdir(project.root)
+    with _resolved_scope(consumer.manifest_path, InstallScope.USER) as ctx:
+        ref = next(dep for dep in ctx.deps_to_install if dep.repo_url == "_local/child")
+        project_copy = ref.get_install_path(project.root / "apm_modules")
+        shutil.copytree(child.root, project_copy)
+        before = (project_copy / "apm.yml").read_bytes()
+        destination = ref.get_install_path(ctx.apm_modules_dir)
+        shutil.rmtree(destination)
+        node = ctx.dependency_graph.dependency_tree.get_node(ref.get_unique_key())
+        node.parent.package.source_path = None
+        assert ref.declaring_parent and ref.anchored_local_path
+        assert ctx.dep_base_dirs[ref.get_unique_key()] == parent.root
+        assert (
+            user_scope_rejection_reason(ref, InstallScope.USER, parent_pkg=node.parent.package)
+            is not None
+        )
+        result = LocalDependencySource(ctx, ref, destination, ref.get_unique_key()).acquire()
+        assert result is None
+        assert not destination.exists()
+        assert (project_copy / "apm.yml").read_bytes() == before
+        assert child.manifest_path.read_bytes() == before
+        ctx.downloader.download_package.assert_not_called()
+
+
+@pytest.mark.req("req-mf-016")
+@pytest.mark.parametrize("reference", ["../child", "../../../outside"], ids=["sibling", "escape"])
+def test_user_remote_paths_are_routed_before_local_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reference: str
+) -> None:
+    """Real USER resolution expands authenticated Git paths before local admission."""
+    factory = LocalPackageFactory(tmp_path / "remote" / "packages")
+    parent = factory.create("parent", dependencies=[{"path": reference}])
+    child = factory.create("child")
+    outside = LocalPackageFactory(tmp_path).create("outside")
+    remote = {
+        "git": "https://gitlab.example.invalid:8443/org/repo",
+        "path": "packages/parent",
+        "ref": "a" * 40,
+    }
+    consumer = LocalPackageFactory(tmp_path / "user").create("consumer", dependencies=[remote])
+    fixtures = {"packages/parent": parent, "packages/child": child}
+
+    def download(dep: DependencyReference, destination: Path) -> None:
+        assert not dep.is_local and dep.local_path is None
+        shutil.copytree(fixtures[dep.virtual_path].root, destination)
+
+    downloader = MagicMock(shared_clone_cache=None)
+    downloader.download_package.side_effect = download
+    local_copy = MagicMock(side_effect=AssertionError("Remote path reached local acquisition"))
+    monkeypatch.setattr("apm_cli.install.phases.local_content._copy_local_package", local_copy)
+    with _resolved_scope(consumer.manifest_path, InstallScope.USER, downloader) as ctx:
+        requested = [call.args[0] for call in downloader.download_package.call_args_list]
+        expected_paths = ["packages/parent"]
+        if reference == "../child":
+            expected_paths.append("packages/child")
+            assert not ctx.callback_failures
+        else:
+            assert ctx.callback_failures == {DependencyReference.parse(reference).get_unique_key()}
+        assert [dep.virtual_path for dep in requested] == expected_paths
+        assert {dep.virtual_path for dep in ctx.deps_to_install} == set(expected_paths)
+        original = DependencyReference.parse_from_dict(remote)
+        for dep in requested:
+            assert (dep.host, dep.port, dep.repo_url, dep.reference, dep.explicit_scheme) == (
+                original.host,
+                original.port,
+                original.repo_url,
+                original.reference,
+                original.explicit_scheme,
+            )
+            assert user_scope_rejection_reason(dep, InstallScope.USER) is None
+            assert dep.get_unique_key() in ctx.callback_downloaded
+            node = ctx.dependency_graph.dependency_tree.get_node(dep.get_unique_key())
+            assert node.package.source_path.is_relative_to(ctx.apm_modules_dir)
+            assert dep.get_install_path(ctx.apm_modules_dir).joinpath("apm.yml").read_bytes() == (
+                fixtures[dep.virtual_path].manifest_path.read_bytes()
+            )
+        assert not (ctx.apm_modules_dir / "_local").exists()
+        assert outside.manifest_path.is_file()
+        local_copy.assert_not_called()
 
 
 @pytest.mark.req("req-mf-016")

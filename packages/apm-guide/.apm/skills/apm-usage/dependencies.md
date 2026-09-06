@@ -68,6 +68,14 @@ inside the same authenticated remote repo root. APM expands that path to the
 parent's remote host/repo/ref and fetches the sibling from the same origin.
 Absolute paths, paths that escape the repo root, and cross-repo local paths
 are rejected.
+This remote expansion runs before operator-local user-scope admission: an
+accepted sibling remains a Git dependency, including during a global install.
+
+Local lock replay still needs the original declaring-source context. Relative
+spelling alone is not source identity or read authorization, and an absolute
+local path is not automatically portable to another machine. The
+`declaring_parent` and `anchored_local_path` fields are APM-specific metadata,
+not standardized portable local-source coordinates.
 
 After a local source directory is selected and resolved, symlinks inside that
 package must resolve within that same directory. Internal links are copied as

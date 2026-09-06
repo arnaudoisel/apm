@@ -624,7 +624,11 @@ selection is configured per project.
 **[req-mf-016]** A conforming **consumer** implementation MUST
 recognise dependency strings beginning with `./`, `../`, `/`, `~/`,
 `.\`, `..\`, or `~\` as local-path entries. Admission and resolution
-depend on the declaring source, not merely on the presence of `..`:
+depend on the declaring source, not merely on the presence of `..`.
+This prefix recognition is syntactic, not authorization to read an
+operator-local filesystem path. For remote-declared entries, apply
+clause (c) before operator-local admission under clause (b); a
+successfully derived Git reference is not an operator-local source:
 
 (a) **Selected local sources.** A consumer MAY admit operator-selected
 local sources at project and user scope, including absolute paths,
@@ -645,8 +649,9 @@ package's original source directory, including at user scope. The
 consumer MUST NOT substitute a staging directory, deployment directory,
 or unrelated current working directory for the declaring source anchor.
 
-(b) **User-scope admission.** A direct relative local dependency at
-user scope MUST be rejected. A relative transitive local dependency
+(b) **Operator-local user-scope admission.** A direct relative local
+filesystem dependency at user scope MUST be rejected. A relative
+transitive local filesystem dependency
 at user scope MUST be rejected unless the consumer has established
 its declaring local parent and that parent's original absolute
 source directory. A local-looking path or a recorded path string
@@ -686,6 +691,16 @@ Source anchoring, remote-repository containment, internal-symlink
 containment, and deployment eligibility are separate checks. This
 requirement does not promise atomicity of the entire install or
 race-free filesystem isolation against concurrent source mutation.
+
+**Local replay interoperability (informative).** A relative spelling
+alone does not identify a local source. Replaying a local dependency
+chain requires reestablishing the original declaring-source context;
+a recorded path string is not authorization to read it. An absolute
+local path does not imply that the same source exists or is approved
+on another machine. The reference CLI's `declaring_parent` and
+`anchored_local_path` metadata are implementation-specific; this
+requirement does not standardize those fields or a portable local
+lockfile representation.
 
 #### 4.3.6 MCP dependencies
 
@@ -3923,6 +3938,9 @@ rejection with declaring-source anchoring, trusted local sibling
 admission, remote-repository containment, and internal local-symlink
 containment. It adds executable positive and negative conformance
 cases in place of the skipped absolute-path-rejection claim.
+The technical review fold clarifies remote-before-local admission,
+adds user-scope remote, multihop, and missing-anchor controls, and
+records the limits of local replay interoperability.
 Statement count remains **121** (116 MUST, 5 SHOULD); no requirement
 identifier is added, removed, or renumbered, and no file schema changes.
 
