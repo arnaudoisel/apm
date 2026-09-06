@@ -14,7 +14,7 @@
   },
   "generator": "gen_statement.py v2",
   "inventory_kind": "static-test-bindings",
-  "manifest_sha256": "c0903dc53f2dcadfa61716d376f32383796ba21a57fd3e199548c674961f3052",
+  "manifest_sha256": "3b1e106cd029ab2e56beda2f5fde82400a8150ba29a627665339846813b0a47e",
   "requirements": [
     {
       "conformance_class": "consumer",
