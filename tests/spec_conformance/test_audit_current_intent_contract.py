@@ -426,6 +426,60 @@ def test_saved_explicit_only_target_replays_without_detection(
     assert all(check["passed"] for check in case.audit(0).values())
 
 
+@pytest.mark.req("req-lk-023")
+@pytest.mark.parametrize("representation", ["canonical", "legacy", "both"])
+def test_historical_native_claims_cannot_pass_filesystem_only_audit(
+    installed: _AuditProject, monkeypatch: pytest.MonkeyPatch, representation: str
+) -> None:
+    """Portable filesystem intent cannot silently discard retained native ownership."""
+    from apm_cli.integration.copilot_app_workflow_integrator import CopilotAppWorkflowIntegrator
+
+    manifest_path = installed.project / "apm.yml"
+    manifest = load_yaml(manifest_path)
+    manifest["targets"] = ["grok-build"]
+    dump_yaml(manifest, manifest_path)
+    assert all(check["passed"] for check in installed.audit(0).values())
+
+    database = installed.home / "retained-native.db"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.executescript(
+            "CREATE TABLE workflows(id TEXT PRIMARY KEY, prompt TEXT, enabled INTEGER);"
+            "INSERT INTO workflows VALUES('retained', 'original host state', 1);"
+        )
+    for suffix in ("-wal", "-shm"):
+        Path(f"{database}{suffix}").write_bytes(b"retained native sidecar")
+    monkeypatch.setenv("APM_COPILOT_APP_DB", str(database))
+    writer = Mock(side_effect=AssertionError("Historical native writer reached by audit"))
+    monkeypatch.setattr(CopilotAppWorkflowIntegrator, "integrate", writer)
+
+    lock_path = installed.project / "apm.lock.yaml"
+    document = load_yaml(lock_path)
+    owner = document["deployments"][0]["active_owner"]
+    uri = "copilot-app-db://workflows/retained-host-workflow"
+    if representation in {"canonical", "both"}:
+        document["deployments"].append(
+            {
+                "kind": "uri",
+                "target": "copilot-app",
+                "value": uri,
+                "runtime": None,
+                "scope": "project",
+                "owners": [owner],
+                "active_owner": owner,
+                "content_hash": None,
+            }
+        )
+    if representation in {"legacy", "both"}:
+        document["dependencies"][0]["deployed_files"].append(uri)
+    dump_yaml(document, lock_path)
+
+    checks = installed.audit(1)
+    writer.assert_not_called()
+    assert all(check["passed"] for name, check in checks.items() if name != "drift"), checks
+    assert checks["drift"]["passed"] is False
+    assert "no isolated filesystem scratch replay backend" in checks["drift"]["message"]
+
+
 class _KnownInternalLinkReplayGap(AssertionError):
     """Only the demonstrated false-orphan outcome is an expected failure."""
 

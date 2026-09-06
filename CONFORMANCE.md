@@ -76,7 +76,7 @@ Inherited Git-tree boundaries for symlink blobs, gitlinks/submodules and CRLF/LF
 | [req-lk-020](docs/src/content/docs/specs/openapm-v0.2.md#req-lk-020) | MUST | 5.2 | consumer | active | 3 | - |
 | [req-lk-021](docs/src/content/docs/specs/openapm-v0.2.md#req-lk-021) | MUST | 5.2 | consumer | active | 2 | - |
 | [req-lk-022](docs/src/content/docs/specs/openapm-v0.2.md#req-lk-022) | MUST | 5.2 | consumer | active | 4 | - |
-| [req-lk-023](docs/src/content/docs/specs/openapm-v0.2.md#req-lk-023) | MUST | 5.5 | consumer | active | 31 | - |
+| [req-lk-023](docs/src/content/docs/specs/openapm-v0.2.md#req-lk-023) | MUST | 5.5 | consumer | active | 34 | - |
 | [req-mf-001](docs/src/content/docs/specs/openapm-v0.2.md#req-mf-001) | MUST | 4.1 | producer | active | 1 | - |
 | [req-mf-002](docs/src/content/docs/specs/openapm-v0.2.md#req-mf-002) | MUST | 4.1 | producer | active | 1 | - |
 | [req-mf-003](docs/src/content/docs/specs/openapm-v0.2.md#req-mf-003) | MUST | 4.1 | producer | active | 1 | - |

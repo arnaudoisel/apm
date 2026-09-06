@@ -204,6 +204,9 @@ modify their database or sidecars.
 
 Audit leaves absent user configuration absent and existing configuration
 unchanged, including during package parsing, MCP inspection, and content scanning.
+Cold replay also reads transport preferences without creating configuration.
+It also skips opportunistic startup update checks, which otherwise write an
+update cache; use `apm self-update --check` separately.
 
 Known limitation: a local package's internal resource symlink can install as
 regular-file content yet be reported as `orphaned` by unchanged CI audit.

@@ -14,7 +14,7 @@
   },
   "generator": "gen_statement.py v2",
   "inventory_kind": "static-test-bindings",
-  "manifest_sha256": "3b1e106cd029ab2e56beda2f5fde82400a8150ba29a627665339846813b0a47e",
+  "manifest_sha256": "699fa2eaec138d150d24f18fe9fd6254bab86e46319c4880fdcaad304fe18046",
   "requirements": [
     {
       "conformance_class": "consumer",
@@ -328,7 +328,7 @@
       "keyword": "MUST",
       "section": "5.5",
       "status": "active",
-      "test_count": 31,
+      "test_count": 34,
       "tests": [
         "tests/spec_conformance/test_audit_current_intent_contract.py::test_admitted_internal_resource_link_survives_unchanged_audit",
         "tests/spec_conformance/test_audit_current_intent_contract.py::test_configured_target_keeps_integrity_and_membership_checks[content]",
@@ -337,6 +337,9 @@
         "tests/spec_conformance/test_audit_current_intent_contract.py::test_current_intent_overrides_old_target_ownership[detection]",
         "tests/spec_conformance/test_audit_current_intent_contract.py::test_current_intent_overrides_old_target_ownership[manifest]",
         "tests/spec_conformance/test_audit_current_intent_contract.py::test_full_audit_does_not_recreate_absent_configuration",
+        "tests/spec_conformance/test_audit_current_intent_contract.py::test_historical_native_claims_cannot_pass_filesystem_only_audit[both]",
+        "tests/spec_conformance/test_audit_current_intent_contract.py::test_historical_native_claims_cannot_pass_filesystem_only_audit[canonical]",
+        "tests/spec_conformance/test_audit_current_intent_contract.py::test_historical_native_claims_cannot_pass_filesystem_only_audit[legacy]",
         "tests/spec_conformance/test_audit_current_intent_contract.py::test_invalid_current_selection_cannot_pass_empty_replay[disabled]",
         "tests/spec_conformance/test_audit_current_intent_contract.py::test_invalid_current_selection_cannot_pass_empty_replay[manifest]",
         "tests/spec_conformance/test_audit_current_intent_contract.py::test_malformed_saved_intent_fails_only_when_selected[False-42]",

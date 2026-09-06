@@ -228,6 +228,8 @@ set target` > existing directory detection. A selected malformed saved target
 fails resolution; a valid manifest target overrides irrelevant invalid saved
 configuration. Audit does not recover unsaved historical `install --target`
 overrides or create missing user configuration.
+Audit skips startup update checks and their cache writes; use
+`apm self-update --check` separately.
 
 Saved target names do not guarantee scratch replay support. Native nonfilesystem
 targets without an isolated filesystem backend (currently `copilot-app`) fail
