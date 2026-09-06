@@ -7,13 +7,14 @@ import os
 import shutil
 import time
 from collections.abc import Callable
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 
 import pytest
 
 from apm_cli.cache.url_normalize import cache_shard_key
 from apm_cli.deps.lockfile import LockFile
+from apm_cli.integration.hook_ownership import dependency_hook_source_marker
 from apm_cli.integration.targets import KNOWN_TARGETS
 from apm_cli.models.dependency import DependencyReference
 from apm_cli.utils.yaml_io import dump_yaml, load_yaml
@@ -25,6 +26,8 @@ from tests.utils.artifact_snapshot import (
 )
 from tests.utils.isolated_apm_environment import IsolatedApmEnvironment
 from tests.utils.lifecycle_interaction_oracle import (
+    HookCoOwner,
+    InstructionCoOwner,
     InteractionOracle,
     RoutingExpectation,
     SourceFixture,
@@ -41,7 +44,8 @@ from tests.utils.lifecycle_interactions import (
     row_profiles,
     validate_routing_rows,
 )
-from tests.utils.local_git_repository import LocalGitRepositoryFactory
+from tests.utils.lifecycle_model_driver import assert_ci_audit_result
+from tests.utils.local_git_repository import LocalGitRepository, LocalGitRepositoryFactory
 from tests.utils.local_package import LocalPackage, LocalPackageFactory
 
 pytestmark = [
@@ -108,13 +112,325 @@ def _author(
         for path in sorted(set(package.root.rglob("*")) - before)
         if path.is_file()
     )
-    return SourceFixture(package.name, kind, name, marker, paths)
+    return SourceFixture(package.name, kind, name, marker, paths, package.root.as_posix())
 
 
-def _result(result: CommandResult, operation: str, *, success: bool = True) -> None:
+def _result(
+    result: CommandResult,
+    operation: str,
+    *,
+    success: bool = True,
+    deployment_root: Path | None = None,
+    tampered_path: Path | None = None,
+) -> None:
+    """Reject invalid command receipts before the action boundary credits laws."""
+    if operation == "audit":
+        assert deployment_root is not None, "Audit action omitted its fixture deployment root"
+        assert_ci_audit_result(
+            result, clean=success, deployment_root=deployment_root, tampered_path=tampered_path
+        )
+        return
     assert (result.returncode == 0) is success, (
         f"{operation}: exit={result.returncode}\n{result.stdout}\n{result.stderr}"
     )
+
+
+def _source_dependency(
+    package: LocalPackage, *, remote: str | None, parent: LocalPackage | None
+) -> DependencyReference:
+    """Derive expected ownership identity only from authored source inputs."""
+    if remote is not None:
+        return DependencyReference.parse_from_dict({"git": remote, "type": "gitlab"})
+    dependency = DependencyReference.parse_from_dict({"path": package.root.as_posix()})
+    if parent is not None:
+        dependency.declaring_parent = parent.root.as_posix()
+        dependency.anchored_local_path = package.root.as_posix()
+    return dependency
+
+
+def _bind_primary_sources(
+    packages: list[LocalPackage],
+    fixtures: list[SourceFixture],
+    rewrites: list[tuple[LocalGitRepository, str]],
+    row: RoutingRow,
+) -> tuple[tuple[SourceFixture, ...], list[DependencyReference]]:
+    """Keep the primary graph and its declaring-parent identities independent of the survivor."""
+    sources = []
+    dependencies = []
+    for index, (package, fixture) in enumerate(zip(packages, fixtures, strict=True)):
+        dependency = _source_dependency(
+            package,
+            remote=rewrites[index][1] if row.source_kind == "git" else None,
+            parent=packages[-1] if index == 0 and len(packages) == 2 else None,
+        )
+        dependencies.append(dependency)
+        sources.append(replace(fixture, dependency_key=dependency.get_unique_key()))
+    return tuple(sources), dependencies
+
+
+def _foreign_hook_members(
+    target: str, source_marker: str
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Author native user and other-package hooks, without a production renderer."""
+    event = {
+        "cursor": "beforeShellExecution",
+        "windsurf": "pre_run_command",
+        "gemini": "BeforeTool",
+    }.get(target, "PreToolUse")
+    entries = []
+    for owner in ("foreign-package", "user-entry"):
+        handler = {"type": "command", "command": f"echo lifecycle-unowned-{owner}"}
+        entry = (
+            {"command": handler["command"]}
+            if target in {"cursor", "windsurf"}
+            else {"matcher": "*", "hooks": [handler]}
+        )
+        entries.append(entry)
+    container = "apm" if target == "antigravity" else "hooks"
+    native = {container: {event: entries}}
+    if target == "cursor":
+        native["version"] = 1
+    sidecar = {event: [{**entries[0], "_apm_source": source_marker}]}
+    return native, sidecar
+
+
+def _author_hook_coowner(
+    factory: LocalPackageFactory, package: LocalPackage, targets: tuple[str, ...]
+) -> SourceFixture:
+    """Author target-native hooks in a real, independent persistent dependency."""
+    paths = []
+    for target in targets:
+        native, _sidecar = _foreign_hook_members(target, "")
+        container = "apm" if target == "antigravity" else "hooks"
+        events = {event: entries[:1] for event, entries in native[container].items()}
+        path = factory.add_hook(package, f"hooks-{target}", {"hooks": events})
+        paths.append(path.relative_to(package.root).as_posix())
+    return SourceFixture(
+        package.name,
+        "hooks",
+        "unrelated-hooks",
+        "lifecycle-unowned-foreign-package",
+        tuple(paths),
+        "",
+    )
+
+
+def _hook_coowner(
+    package: LocalPackage,
+    source: SourceFixture,
+    dependency: DependencyReference,
+    row: RoutingRow,
+    targets: tuple[str, ...],
+    lock_root: Path,
+) -> HookCoOwner:
+    """Bind source inputs to expected native slices and exact installed bytes."""
+    members = {}
+    unowned_members = {}
+    for target in targets:
+        profile = KNOWN_TARGETS[target].for_scope(user_scope=row.user_scope)
+        assert profile is not None and profile.hooks_config_display
+        native, sidecar = _foreign_hook_members(target, dependency_hook_source_marker(dependency))
+        container = "apm" if target == "antigravity" else "hooks"
+        directory = PurePosixPath(profile.root_dir)
+        unowned_members[(directory / "apm-hooks.json").as_posix()] = {
+            event: entries[1:] for event, entries in native[container].items()
+        }
+        native[container] = {event: entries[:1] for event, entries in native[container].items()}
+        members[target] = {
+            (directory / PurePosixPath(profile.hooks_config_display).name).as_posix(): native,
+            (directory / "apm-hooks.json").as_posix(): sidecar,
+        }
+    materialized = dependency.get_install_path(lock_root / "apm_modules")
+    return HookCoOwner(
+        replace(source, dependency_key=dependency.get_unique_key()),
+        members,
+        {
+            materialized / name: (package.root / name).read_bytes()
+            for name in ("apm.yml", *source.source_files)
+        },
+        unowned_members,
+    )
+
+
+@dataclass(frozen=True)
+class _HookCoOwnerSetup:
+    """Publication inputs kept separate from the row's primary graph edge."""
+
+    package: LocalPackage
+    source: SourceFixture
+    dependency: DependencyReference
+    declaration: dict[str, str]
+    rewrites: tuple[tuple[LocalGitRepository, str], ...]
+    commits: dict[str, str]
+
+
+def _prepare_hook_coowner(
+    factory: LocalPackageFactory,
+    repositories: LocalGitRepositoryFactory,
+    row: RoutingRow,
+    targets: tuple[str, ...],
+    declared: tuple[str, ...],
+) -> _HookCoOwnerSetup:
+    """Publish the persistent owner with this row's actual transport/ref category."""
+    package = factory.create(f"survivor-{row.id}", targets=declared)
+    source = _author_hook_coowner(factory, package, targets)
+    remote = None
+    rewrites = ()
+    commits = {}
+    declaration = {"path": package.root.as_posix()}
+    if row.source_kind == "git":
+        repository = repositories.create(package.name, source_tree=package.root)
+        commit = repositories.commit(repository, message="seed persistent hook co-owner")
+        if row.ref_state == "tag":
+            repositories.tag(repository, _TAG, commit)
+        remote = f"{_REMOTE_PREFIX}/{package.name}.git"
+        rewrites = ((repository, remote),)
+        declaration = {
+            "git": remote,
+            "type": "gitlab",
+            "ref": _TAG if row.ref_state == "tag" else commit.sha,
+            "alias": package.name,
+        }
+        commits[package.name] = commit.sha
+    return _HookCoOwnerSetup(
+        package,
+        source,
+        _source_dependency(package, remote=remote, parent=None),
+        declaration,
+        rewrites,
+        commits,
+    )
+
+
+def _module_paths(
+    materializations: list[tuple[LocalPackage, SourceFixture, DependencyReference]], lock_root: Path
+) -> set[str]:
+    """Authorize exact primary/survivor materialization leaves, never whole directories."""
+    paths = set()
+    for package, source, dependency in materializations:
+        materialized = dependency.get_install_path(lock_root / "apm_modules")
+        for relative in ("apm.yml", ".apm-pin", *source.source_files):
+            paths.add(f"apm_modules/{package.name}/{relative}")
+            paths.add((materialized / relative).relative_to(lock_root).as_posix())
+    return paths
+
+
+def _prepare_instruction_coowner(
+    factory: LocalPackageFactory,
+    repositories: LocalGitRepositoryFactory,
+    row: RoutingRow,
+    declared: tuple[str, ...],
+) -> _HookCoOwnerSetup:
+    """Publish an ordinary Git/pinned instruction sibling, never a manufactured aggregate."""
+    assert row.id == "copilot-instructions-user" and (row.source_kind, row.ref_state) == (
+        "git",
+        "pinned",
+    )
+    package = factory.create(f"survivor-{row.id}", targets=declared)
+    source = _author(factory, package, row, suffix="-survivor")
+    repository = repositories.create(package.name, source_tree=package.root)
+    commit = repositories.commit(repository, message="seed persistent instruction co-owner")
+    remote = f"{_REMOTE_PREFIX}/{package.name}.git"
+    return _HookCoOwnerSetup(
+        package,
+        source,
+        _source_dependency(package, remote=remote, parent=None),
+        {"git": remote, "type": "gitlab", "ref": commit.sha, "alias": package.name},
+        ((repository, remote),),
+        {package.name: commit.sha},
+    )
+
+
+def _bind_instruction_coowner(
+    coowner: _HookCoOwnerSetup,
+    primary_dependencies: list[DependencyReference],
+    lock_root: Path,
+) -> InstructionCoOwner:
+    """Derive survivor bytes and removed materializations only from authored inputs."""
+    materialized = coowner.dependency.get_install_path(lock_root / "apm_modules")
+    return InstructionCoOwner(
+        replace(coowner.source, dependency_key=coowner.dependency.get_unique_key()),
+        f"# {coowner.source.marker}",
+        {
+            materialized / name: (coowner.package.root / name).read_bytes()
+            for name in ("apm.yml", *coowner.source.source_files)
+        },
+        tuple(
+            dependency.get_install_path(lock_root / "apm_modules")
+            for dependency in primary_dependencies
+        ),
+    )
+
+
+def _prepare_coowner(
+    factory: LocalPackageFactory,
+    repositories: LocalGitRepositoryFactory,
+    row: RoutingRow,
+    hook_targets: tuple[str, ...],
+    declared: tuple[str, ...],
+) -> _HookCoOwnerSetup | None:
+    """Keep shared-hook publication unchanged while selecting the instruction fixture."""
+    if hook_targets:
+        return _prepare_hook_coowner(factory, repositories, row, hook_targets, declared)
+    if row.id == "copilot-instructions-user":
+        return _prepare_instruction_coowner(factory, repositories, row, declared)
+    return None
+
+
+def _row_permissions(
+    row: RoutingRow,
+    route_row: RoutingRow,
+    lifetime: RoutingExpectation,
+    materializations: list[tuple[LocalPackage, SourceFixture, DependencyReference]],
+    lock_root: Path,
+    rewrites: list[tuple[LocalGitRepository, str]],
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Build the complete authored write set, including only named cache shards."""
+    root_id = "user" if row.user_scope else "project"
+    control = {"apm.lock.yaml", ".gitignore"}
+    native = set(lifetime.files)
+    module_files = _module_paths(materializations, lock_root)
+    exact = {
+        "project": set() if row.user_scope else {*control, *native, *module_files},
+        "user": {".apm/config.json", ".local/state/gh/device-id"},
+        "cache": {"git", "git/db_v1", "git/checkouts_v1"},
+    }
+    exact[root_id].update(profile.root_dir for profile in row_profiles(route_row))
+    if row.user_scope:
+        exact["user"].update(native)
+        exact["user"].update(f".apm/{name}" for name in (*control, *module_files))
+    cache_trees = {
+        "cache": {
+            f"git/{bucket}/{cache_shard_key(remote)}"
+            for _repository, remote in rewrites
+            for bucket in ("db_v1", "checkouts_v1")
+        }
+    }
+    return exact, cache_trees
+
+
+def _bind_coowner(
+    oracle: InteractionOracle,
+    coowner: _HookCoOwnerSetup | None,
+    hook_targets: tuple[str, ...],
+    primary_dependencies: list[DependencyReference],
+) -> None:
+    """Attach the appropriate native ownership contract without changing hook semantics."""
+    if coowner is None:
+        return
+    if hook_targets:
+        oracle.hook_coowner = _hook_coowner(
+            coowner.package,
+            coowner.source,
+            coowner.dependency,
+            oracle.row,
+            hook_targets,
+            oracle.lock_root,
+        )
+    else:
+        oracle.instruction_coowner = _bind_instruction_coowner(
+            coowner, primary_dependencies, oracle.lock_root
+        )
 
 
 def _seed_unowned(oracle: InteractionOracle, lifetime: RoutingExpectation) -> None:
@@ -132,15 +448,53 @@ def _seed_unowned(oracle: InteractionOracle, lifetime: RoutingExpectation) -> No
         sentinels[deploy_root / PurePosixPath(path).parts[0] / "unrelated.txt"] = (
             b"unowned neighbor\n"
         )
-    shared = {
-        deploy_root / name: {"lifecycleUnowned": {"keep": ["foreign-package", "user-entry"]}}
-        for name in lifetime.shared
-        if name.endswith(".json") and not name.endswith("apm-hooks.json")
+    shared: dict[Path, object] = {}
+    prose = (
+        {
+            deploy_root / ".copilot/lifecycle-user-notes.md": (
+                b"# User notes\n\nKeep this independently authored foreign prose.\n"
+            )
+        }
+        if oracle.instruction_coowner is not None
+        else {}
+    )
+    targets = dict.fromkeys(
+        (*oracle.row.targets, *oracle.row.widen_targets, *oracle.row.narrow_targets)
+    )
+    if "hooks" in oracle.row.primitives:
+        for target in targets:
+            profile = KNOWN_TARGETS[target].for_scope(user_scope=oracle.row.user_scope)
+            assert profile is not None
+            if profile.hooks_config_display:
+                native, _sidecar = _foreign_hook_members(target, "")
+                container = "apm" if target == "antigravity" else "hooks"
+                native[container] = {
+                    event: entries[1:] for event, entries in native[container].items()
+                }
+                directory = deploy_root / profile.root_dir
+                shared[directory / PurePosixPath(profile.hooks_config_display).name] = native
+    coowned = {
+        name
+        for members in (oracle.hook_coowner.members.values() if oracle.hook_coowner else ())
+        for name in members
     }
+    generated = (
+        expected_routing(oracle.row, (oracle.instruction_coowner.source,)).shared
+        if oracle.instruction_coowner is not None
+        else frozenset()
+    )
+    assert {
+        *(path.relative_to(deploy_root).as_posix() for path in shared),
+        *coowned,
+        *generated,
+    } == set(lifetime.shared), "Every shared fixture needs its native ownership contract"
+    assert all(not (deploy_root / name).exists() for name in generated), (
+        "The CLI, not fixture setup, must author the managed aggregate"
+    )
     seed_paths = {
         name: {
             path.relative_to(root).as_posix()
-            for path in (*sentinels, *shared)
+            for path in (*sentinels, *shared, *prose)
             if path.is_relative_to(root)
         }
         for name, root in oracle.roots.items()
@@ -152,24 +506,60 @@ def _seed_unowned(oracle: InteractionOracle, lifetime: RoutingExpectation) -> No
         for path, payload in shared.items():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(payload) + "\n", encoding="ascii")
-    oracle.evaluated()
+        for path, content in prose.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
     oracle.protected_json.update(shared)
+    oracle.protected_text.update(prose)
+    oracle.assert_protected_content(oracle.capture())
+    oracle.evaluated()
 
 
-def _assert_provenance(oracle: InteractionOracle, expected_commits: dict[str, str]) -> None:
+def _assert_provenance(
+    oracle: InteractionOracle,
+    expected_commits: dict[str, str],
+    *,
+    after_uninstall: bool = False,
+) -> None:
     """Cross-check the materialized dependency graph against authored source inputs."""
     lock = LockFile.read(oracle.lock_root / "apm.lock.yaml")
-    assert lock is not None
-    entries = lock.get_package_dependencies()
-    assert len(entries) == len(oracle.sources), "Dependency shape was not materialized"
+    sources = (
+        *(() if after_uninstall else oracle.sources),
+        *((oracle.hook_coowner.source,) if oracle.hook_coowner else ()),
+        *((oracle.instruction_coowner.source,) if oracle.instruction_coowner else ()),
+    )
+    entries = lock.get_package_dependencies() if lock else []
+    assert {entry.get_unique_key(): entry.name for entry in entries} == {
+        source.dependency_key: source.package_name for source in sources
+    }, "Authored dependency graph differs from lock"
     if oracle.row.source_kind == "git":
-        assert {entry.name: entry.resolved_commit for entry in entries} == expected_commits
+        assert {entry.name: entry.resolved_commit for entry in entries} == {
+            source.package_name: expected_commits[source.package_name] for source in sources
+        }, "Authored Git commits differ from lock"
         if oracle.row.ref_state == "tag":
             assert all(entry.resolved_ref == _TAG for entry in entries)
     else:
         assert all(entry.resolved_commit is None for entry in entries)
+    oracle.assert_hook_coowner_installed()
+    oracle.assert_instruction_coowner_installed()
     if oracle.row.id.startswith("interaction-"):
         oracle.evaluations.append(("provenance", ("source.ref_cache_coherent",)))
+
+
+def _assert_survivor_state(
+    oracle: InteractionOracle, coowner: _HookCoOwnerSetup, expected_commits: dict[str, str]
+) -> None:
+    """Require exactly the authored survivor after removing the primary graph."""
+    _assert_provenance(oracle, expected_commits, after_uninstall=True)
+    manifest = load_yaml(oracle.lock_root / "apm.yml")
+    assert manifest["dependencies"]["apm"] == [coowner.declaration], (
+        "Uninstall must preserve exactly the authored co-owner declaration"
+    )
+    if oracle.instruction_coowner is not None:
+        assert all(
+            not path.exists() and not path.is_symlink()
+            for path in oracle.instruction_coowner.primary_materializations
+        ), "Removed instruction package materialization survived uninstall"
 
 
 def _assert_reinstall(
@@ -179,6 +569,7 @@ def _assert_reinstall(
 ) -> None:
     """Keep the known second-pass exception narrower than ordinary install writes."""
     after = oracle.capture()
+    oracle.assert_protected_content(after)
     if observations is not None:
         observations.append((before, after))
     if known_gap_for(oracle.row) is None:
@@ -278,6 +669,15 @@ def _execute_row(
         if (row.dependency_shape == "transitive")
         else (f"fixture-{row.id}",)
     )
+    all_targets = tuple(dict.fromkeys((*row.targets, *row.widen_targets, *row.narrow_targets)))
+    coowner_targets = tuple(
+        target
+        for target in all_targets
+        if "hooks" in row.primitives and KNOWN_TARGETS[target].hooks_config_display
+    )
+    coowner_name = f"survivor-{row.id}"
+    instruction_coowner = row.id == "copilot-instructions-user"
+    setup_names = (*names, *((coowner_name,) if coowner_targets or instruction_coowner else ()))
     project_root = isolated.work_root / f"consumer-{row.id}"
     lock_root = isolated.config_root if row.user_scope else project_root
     route_row = (
@@ -304,9 +704,9 @@ def _execute_row(
         "source-fixture",
         exact={"project": {"apm.yml"}, "user": {".apm/apm.yml"}},
         trees={
-            "sources": set(names),
+            "sources": set(setup_names),
             "repositories": {
-                f"{name}{suffix}" for name in names for suffix in (".git", "-worktree")
+                f"{name}{suffix}" for name in setup_names for suffix in (".git", "-worktree")
             },
         },
     ):
@@ -350,11 +750,17 @@ def _execute_row(
                     }
                 ]
                 expected_commits[name] = commit.sha
-                git_sources.append((repository, fixture))
-        if rewrites:
-            environment = repositories.url_rewrite_subprocess_env_many(rewrites)
+                git_sources.append(repository)
+        coowner = _prepare_coowner(factory, repositories, row, coowner_targets, declared)
+        if coowner is not None:
+            expected_commits.update(coowner.commits)
+        all_rewrites = [*rewrites, *(coowner.rewrites if coowner else ())]
+        if all_rewrites:
+            environment = repositories.url_rewrite_subprocess_env_many(all_rewrites)
         if row.source_kind == "local":
             dependencies = [{"path": packages[-1].root.as_posix()}]
+        if coowner is not None:
+            dependencies = [*dependencies, coowner.declaration]
         project = LocalPackageFactory(isolated.work_root).create(
             f"consumer-{row.id}",
             dependencies=() if row.user_scope else dependencies,
@@ -371,47 +777,21 @@ def _execute_row(
                 lock_root / "apm.yml",
             )
     oracle.evaluated()
-    sources = tuple(fixtures)
+    sources, source_dependencies = _bind_primary_sources(packages, fixtures, rewrites, row)
     oracle.sources = sources
+    _bind_coowner(oracle, coowner, coowner_targets, source_dependencies)
     all_targets = tuple(
         dict.fromkeys((*route_row.targets, *row.widen_targets, *row.narrow_targets))
     )
     lifetime = expected_routing(route_row, sources, all_targets)
     _seed_unowned(oracle, lifetime)
 
-    control = {"apm.lock.yaml", ".gitignore"}
-    native = set(lifetime.files)
-    module_files = set()
-    for index, (package, source) in enumerate(zip(packages, sources, strict=True)):
-        if row.source_kind == "git":
-            dependency = DependencyReference.parse_from_dict(
-                {"git": rewrites[index][1], "type": "gitlab"}
-            )
-        else:
-            dependency = DependencyReference.parse_from_dict({"path": package.root.as_posix()})
-            if index == 0 and len(packages) == 2:
-                dependency.declaring_parent = packages[-1].root.as_posix()
-                dependency.anchored_local_path = package.root.as_posix()
-        materialized = dependency.get_install_path(lock_root / "apm_modules")
-        for relative in ("apm.yml", ".apm-pin", *source.source_files):
-            module_files.add(f"apm_modules/{package.name}/{relative}")
-            module_files.add((materialized / relative).relative_to(lock_root).as_posix())
-    exact = {
-        "project": set() if row.user_scope else {*control, *native, *module_files},
-        "user": {".apm/config.json", ".local/state/gh/device-id"},
-        "cache": {"git", "git/db_v1", "git/checkouts_v1"},
-    }
-    exact[root_id].update(profile.root_dir for profile in row_profiles(route_row))
-    if row.user_scope:
-        exact["user"].update(native)
-        exact["user"].update(f".apm/{name}" for name in (*control, *module_files))
-    cache_trees = {
-        "cache": {
-            f"git/{bucket}/{cache_shard_key(remote)}"
-            for _repository, remote in rewrites
-            for bucket in ("db_v1", "checkouts_v1")
-        }
-    }
+    materializations = list(zip(packages, sources, source_dependencies, strict=True))
+    if coowner is not None:
+        materializations.append((coowner.package, coowner.source, coowner.dependency))
+    exact, cache_trees = _row_permissions(
+        row, route_row, lifetime, materializations, lock_root, all_rewrites
+    )
 
     def action(
         operation: str,
@@ -422,6 +802,7 @@ def _execute_row(
         unchanged: bool = False,
         manifest: bool = False,
         cwd: Path | None = None,
+        tampered_path: Path | None = None,
     ) -> CommandResult:
         allowed = {name: set(paths) for name, paths in exact.items()}
         if manifest:
@@ -437,16 +818,26 @@ def _execute_row(
             exact=allowed,
             trees=cache_trees,
             unchanged=unchanged,
+            hook_targets=targets if operation != "uninstall" else None,
         )
-        _result(result, operation, success=success)
-        if operation == "install":
-            _write_install_observation(tmp_path, oracle, result)
+        _result(
+            result,
+            operation,
+            success=success,
+            deployment_root=deploy_root,
+            tampered_path=tampered_path,
+        )
+        if oracle.hook_targets:
+            oracle.assert_hook_coowner_installed()
+        oracle.assert_instruction_coowner_installed()
         if targets is not None:
             try:
                 oracle.assert_routing(targets)
             except AssertionError as error:
                 error.add_note(f"{operation} output:\n{result.stdout}\n{result.stderr}")
                 raise
+        if operation == "install":
+            _write_install_observation(tmp_path, oracle, result)
         laws = ["outcome.status_matches_state"]
         if targets is not None:
             laws.append("routing.authorized_targets_only")
@@ -504,10 +895,13 @@ def _execute_row(
         assert not list(isolated.cache_root.rglob("HEAD"))
     if row.integrity_state == "tampered":
         candidates = expected_routing(route_row, (sources[0],)).files
+        # Tamper the native content, not the shared attribution sidecar: changing
+        # a sidecar can invalidate more than one replay projection at once.
         candidate = next(
             deploy_root / name
             for name in sorted(candidates)
-            if sources[0].marker.encode() in (deploy_root / name).read_bytes()
+            if not name.endswith("apm-hooks.json")
+            and sources[0].marker.encode() in (deploy_root / name).read_bytes()
         )
         pristine = candidate.read_bytes()
         corrupted = pristine.replace(
@@ -526,10 +920,11 @@ def _execute_row(
     if row.command == "audit":
         action(
             "audit",
-            ("audit", "--ci", "--no-policy", "--format", "json"),
+            ("audit", "--ci", "--no-policy", "--no-fail-fast", "--format", "json"),
             success=row.integrity_state == "clean",
             unchanged=True,
             cwd=lock_root,
+            tampered_path=candidate if row.integrity_state == "tampered" else None,
         )
         if row.integrity_state == "tampered":
             oracle.observe("restore-tamper", lambda: candidate.write_bytes(pristine), exact=exact)
@@ -538,7 +933,7 @@ def _execute_row(
     else:
         if row.command == "update" and row.ref_state == "tag":
             updated = []
-            for repository, source in git_sources:
+            for repository, source in zip(git_sources, oracle.sources, strict=True):
                 new_marker = source.marker.replace("version-a", "version-b")
 
                 def advance(repository=repository, source=source, new_marker=new_marker):
@@ -632,6 +1027,8 @@ def _execute_row(
             action("prune", ("prune",), targets=targets)
     uninstall_name = rewrites[-1][1] if rewrites else packages[-1].root.as_posix()
     action("uninstall", ("uninstall", uninstall_name, *scope), targets=(), manifest=True)
+    if coowner is not None:
+        _assert_survivor_state(oracle, coowner, expected_commits)
     oracle.assert_finished(required_transitions(row))
     return _evidence(tmp_path, row, oracle, started, gap)
 
@@ -645,6 +1042,11 @@ def _write_install_observation(
     root = oracle.roots[oracle.deployment_root_id]
     lock_path = oracle.lock_root / "apm.lock.yaml"
     paths = expected_routing(oracle.row, oracle.sources).files
+    input_sources = (
+        *oracle.sources,
+        *((oracle.hook_coowner.source,) if oracle.hook_coowner else ()),
+        *((oracle.instruction_coowner.source,) if oracle.instruction_coowner else ()),
+    )
     payload = {
         "command": result.command,
         "cwd": str(result.cwd),
@@ -653,7 +1055,7 @@ def _write_install_observation(
         "manifest": load_yaml(oracle.lock_root / "apm.yml"),
         "source_manifests": {
             str(path): load_yaml(path)
-            for source in oracle.sources
+            for source in input_sources
             for path in (oracle.roots["sources"] / source.package_name / "apm.yml",)
         },
         "lock_path": str(lock_path),
@@ -664,6 +1066,10 @@ def _write_install_observation(
         },
         "stdout": result.stdout,
         "stderr": result.stderr,
+        "hook_coowner": asdict(oracle.hook_coowner.source) if oracle.hook_coowner else None,
+        "instruction_coowner": (
+            asdict(oracle.instruction_coowner.source) if oracle.instruction_coowner else None
+        ),
     }
     (tmp_path / "install-observation.json").write_text(
         json.dumps(payload, sort_keys=True, indent=2) + "\n",

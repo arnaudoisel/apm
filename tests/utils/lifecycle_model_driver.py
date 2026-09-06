@@ -208,6 +208,114 @@ def law_source_coherent(observation: TransitionObservation) -> None:
         assert deployed == ArtifactEntry(SKILL_PATH, "file", _digest(SKILL_BYTES)), deployed
 
 
+def assert_ci_audit_result(
+    result: CommandResult,
+    *,
+    clean: bool,
+    deployment_root: Path | None = None,
+    tampered_path: Path | None = None,
+) -> None:
+    """Validate --ci outcomes; routing fixtures additionally require complete replay.
+
+    The model's small command fake supplies only status and ``passed``. Real
+    interaction rows supply their authored deployment root and tampered leaf:
+    those rows cannot earn credit without completed, attributable verification.
+    This is a test receipt check, not an implementation of bare-audit policy.
+    """
+    assert type(result.returncode) is int and result.returncode == (0 if clean else 1), (
+        f"audit: exit={result.returncode}\n{result.stdout}\n{result.stderr}"
+    )
+    try:
+        payload = json.loads(result.stdout)
+    except (ValueError, TypeError) as error:
+        raise AssertionError(f"audit: invalid JSON result: {result.stdout!r}") from error
+    assert isinstance(payload, dict) and payload.get("passed") is clean, (
+        f"audit: unexpected passed value: {payload!r}"
+    )
+    if deployment_root is None:
+        assert tampered_path is None, "audit: attribution requires a deployment root"
+        return
+    assert (tampered_path is None) is clean, "audit: missing or unexpected tamper input"
+    checks = payload.get("checks")
+    assert isinstance(checks, list) and checks, "audit: missing completed checks"
+    by_name = {}
+    for check in checks:
+        assert isinstance(check, dict), f"audit: malformed check: {check!r}"
+        name = check.get("name")
+        assert isinstance(name, str) and name and name not in by_name, (
+            f"audit: missing or duplicate check name: {name!r}"
+        )
+        assert type(check.get("passed")) is bool, f"audit: nonboolean check: {name}"
+        assert isinstance(check.get("message"), str), f"audit: missing check message: {name}"
+        details = check.get("details")
+        assert isinstance(details, list) and all(isinstance(item, str) for item in details), (
+            f"audit: malformed check details: {name}"
+        )
+        by_name[name] = check
+    required = {
+        "lockfile-exists",
+        "ref-consistency",
+        "deployment-ledger-owners",
+        "deployed-files-present",
+        "no-orphaned-packages",
+        "skill-subset-consistency",
+        "config-consistency",
+        "content-integrity",
+        "includes-consent",
+        "drift",
+    }
+    assert required <= by_name.keys(), (
+        f"audit: incomplete verification: missing={sorted(required - by_name.keys())}"
+    )
+    failed = {name for name, check in by_name.items() if not check["passed"]}
+    expected_failures = set() if clean else {"content-integrity", "drift"}
+    assert failed <= expected_failures, f"audit: unrelated failed checks: {sorted(failed)}"
+    assert by_name["drift"]["passed"] is clean, "audit: replay did not verify expected state"
+    summary = payload.get("summary")
+    assert isinstance(summary, dict) and all(
+        type(summary.get(name)) is int and summary[name] == count
+        for name, count in (
+            ("total", len(checks)),
+            ("passed", len(checks) - len(failed)),
+            ("failed", len(failed)),
+        )
+    ), f"audit: inconsistent check summary: {summary!r}"
+    drift = payload.get("drift")
+    findings = drift.get("drift") if isinstance(drift, dict) else None
+    assert isinstance(findings, list), "audit: missing completed replay findings"
+    if clean:
+        assert by_name["drift"]["message"] == "no drift detected against lockfile", (
+            f"audit: clean replay was not completed: {by_name['drift']!r}"
+        )
+        assert not findings, f"audit: clean receipt contains drift: {findings!r}"
+        return
+    assert tampered_path is not None
+    relative = tampered_path.relative_to(deployment_root).as_posix()
+    # Replay may report a root-relative path or an absolute user-scope path.
+    allowed_paths = {relative, tampered_path.as_posix()}
+    assert len(findings) == 1 and isinstance(findings[0], dict), (
+        f"audit: expected exactly the tampered fixture finding: {findings!r}"
+    )
+    finding = findings[0]
+    inline_diff = finding.get("inline_diff")
+    assert inline_diff is None or (
+        isinstance(inline_diff, str) and not inline_diff.startswith("(read error:")
+    ), f"audit: replay could not compare the tampered fixture: {finding!r}"
+    assert (
+        finding.get("kind") == "modified"
+        and isinstance(finding.get("path"), str)
+        and finding["path"] in allowed_paths
+    ), f"audit: unrelated or incomplete integrity finding: {finding!r}"
+    assert by_name["drift"]["details"] == [f"modified: {finding['path']}"], (
+        "audit: replay check and findings disagree"
+    )
+    if "content-integrity" in failed:
+        details = by_name["content-integrity"]["details"]
+        assert len(details) == 1 and any(
+            details[0].startswith(f"hash-drift: {path} (dep=") for path in allowed_paths
+        ), f"audit: unrelated content-integrity failure: {details!r}"
+
+
 def law_outcome(observation: TransitionObservation) -> None:
     """Expected manifest, deployment, lock, status, and audit/dry-run diagnostics."""
     expected = observation.expected
@@ -227,11 +335,10 @@ def law_outcome(observation: TransitionObservation) -> None:
         assert result is None
         return
     assert result is not None, "Missing command result"
-    assert result.returncode == (1 if observation.transition == "audit_tampered" else 0)
     if observation.transition in {"audit_clean", "audit_tampered"}:
-        payload = json.loads(result.stdout)
-        assert isinstance(payload, dict)
-        assert payload.get("passed") is (observation.transition == "audit_clean"), payload
+        assert_ci_audit_result(result, clean=observation.transition == "audit_clean")
+    else:
+        assert result.returncode == 0
     if observation.transition == "dry_run":
         assert "[i] APM dependencies (1):" in result.stdout.splitlines()
 
