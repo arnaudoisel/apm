@@ -1116,9 +1116,13 @@ def _instruction_oracle(tmp_path: Path) -> tuple[InteractionOracle, _HookCoOwner
         _seed_unowned,
         _source_dependency,
     )
+    from tests.utils.isolated_apm_environment import IsolatedApmEnvironment
     from tests.utils.local_git_repository import LocalGitRepositoryFactory
     from tests.utils.local_package import LocalPackageFactory
 
+    isolated = IsolatedApmEnvironment.create(
+        tmp_path / "git-environment", base_env=dict(os.environ)
+    )
     oracle = _oracle(tmp_path)
     oracle.row = next(row for row in ROUTING_ROWS if row.id == "copilot-instructions-user")
     oracle.deployment_root_id = "user"
@@ -1134,7 +1138,7 @@ def _instruction_oracle(tmp_path: Path) -> tuple[InteractionOracle, _HookCoOwner
     oracle.sources = (replace(source, dependency_key=dependency.get_unique_key()),)
     setup = _prepare_instruction_coowner(
         factory,
-        LocalGitRepositoryFactory(tmp_path / "repositories", env=dict(os.environ)),
+        LocalGitRepositoryFactory(isolated.repository_root, env=isolated.subprocess_env()),
         oracle.row,
         oracle.row.targets,
     )
@@ -1206,6 +1210,47 @@ def _materialize_instruction_state(
         _deployments_present=True,
     ).write(oracle.lock_root / "apm.lock.yaml")
     dump_yaml({"dependencies": {"apm": [setup.declaration]}}, oracle.lock_root / "apm.yml")
+
+
+@pytest.mark.parametrize("ambient_identity", ("missing", "configured"))
+def test_copilot_source_setup_uses_isolated_git_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ambient_identity: str
+) -> None:
+    from collections.abc import Mapping
+
+    from tests.utils.local_git_repository import LocalGitRepositoryFactory
+
+    ambient_config = tmp_path / "ambient.gitconfig"
+    ambient_config.write_text("", encoding="ascii")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(ambient_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    expected = {
+        "GIT_AUTHOR_NAME": "APM Test",
+        "GIT_AUTHOR_EMAIL": "apm-test@example.invalid",
+        "GIT_COMMITTER_NAME": "APM Test",
+        "GIT_COMMITTER_EMAIL": "apm-test@example.invalid",
+    }
+    for name in expected:
+        if ambient_identity == "missing":
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, "ambient@example.invalid")
+
+    def require_isolation(root: Path, *, env: Mapping[str, str]) -> LocalGitRepositoryFactory:
+        assert {name: env.get(name) for name in expected} == expected, (
+            "Copilot source setup inherited the developer's Git identity"
+        )
+        assert env.get("GIT_CONFIG_GLOBAL") != str(ambient_config), (
+            "Copilot source setup inherited the developer's Git configuration"
+        )
+        return LocalGitRepositoryFactory(root, env=env)
+
+    monkeypatch.setattr(
+        "tests.utils.local_git_repository.LocalGitRepositoryFactory", require_isolation
+    )
+    oracle, setup = _instruction_oracle(tmp_path)
+    assert oracle.instruction_coowner is not None
+    assert setup.declaration["ref"] == setup.commits[setup.package.name]
 
 
 def test_copilot_seed_keeps_generated_aggregate_absent_and_notes_outside_writes(
