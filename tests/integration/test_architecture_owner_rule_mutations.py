@@ -190,12 +190,28 @@ MUTATIONS: tuple[MutationCase, ...] = (
         intent="Policy verification bypasses the canonical SHA-2 digest owner.",
     ),
     MutationCase(
+        guard_id="contracts-tooling-policy-identity",
+        rule_id="contracts-tooling-policy-identity",
+        path="src/apm_cli/models/dependency/identity.py",
+        old="def normalize_package_policy_identity(",
+        new="def normalize_package_policy_identity_disabled(",
+        intent="Policy identity casing loses its canonical normalizer.",
+    ),
+    MutationCase(
         guard_id="contracts-tooling-project-yaml-write-delegation",
         rule_id="contracts-tooling-project-yaml-write-delegation",
         path="src/apm_cli/utils/yaml_io.py",
         old="    atomic_write_text(\n",
         new="    write_text_lf(\n",
         intent="The atomic project YAML writer bypasses the canonical atomic writer.",
+    ),
+    MutationCase(
+        guard_id="contracts-tooling-python-artifact-membership",
+        rule_id="contracts-tooling-python-artifact-membership",
+        path="src/apm_cli/security/gate.py",
+        old="def is_generated_python_artifact(",
+        new="def is_generated_python_artifact_disabled(",
+        intent="Generated Python artifact membership loses its canonical predicate.",
     ),
     MutationCase(
         guard_id="contracts-tooling-root-context-write-eligibility",
