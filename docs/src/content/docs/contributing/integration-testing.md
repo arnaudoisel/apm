@@ -403,10 +403,11 @@ the build independently; all remain required at the final gate.
 5. Promote only the exact archives that were packaged once, verified, unpacked,
    and tested.
 
-Unix integration uses the shared `release-integration.yml` runner. macOS ARM
-uses two outer shards with three workers each; other native Unix lanes use one
-shard with four workers. ARM uses `least_duration` assignment, preserving
-relative order within each shard. Every shard must succeed.
+Unix integration uses the shared `release-integration.yml` runner. All native
+Unix lanes retain one shard with four workers and `duration_based_chunks`
+assignment. Multi-runner ARM sharding remains experimental until a matched
+performance comparison supports changing the release topology. Every
+configured shard must succeed.
 
 For stable tags, read-only docs and wheel builds also start after release
 planning. Their publishers wait for successful GitHub Release creation and
@@ -563,6 +564,7 @@ compare a later complete release before claiming an end-to-end improvement.
 Apply the `ci-performance` PR label to run `ci-release-performance.yml` and
 `ci-source-performance.yml`. The native probe builds one current macOS ARM
 candidate, then compares one four-worker run against two three-worker shards.
+This proposed topology is probe-only; it does not change native release policy.
 All three consume the same verified archive and the same empty timing
 snapshot, testing cold-history behavior rather than assuming a warm cache.
 The Windows probe compares serial and two-worker execution of the unchanged

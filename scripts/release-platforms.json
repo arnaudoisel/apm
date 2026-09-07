@@ -44,9 +44,9 @@
     "platform": "darwin",
     "binary_name": "apm-darwin-arm64",
     "integration_markers": "not live",
-    "integration_shard_count": 2,
-    "integration_xdist_workers": 3,
-    "integration_splitting_algorithm": "least_duration",
+    "integration_shard_count": 1,
+    "integration_xdist_workers": 4,
+    "integration_splitting_algorithm": "duration_based_chunks",
     "on_main": false
   }
 ]

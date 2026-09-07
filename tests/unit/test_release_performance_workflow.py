@@ -103,7 +103,7 @@ def test_native_probe_uses_cold_shared_input_and_one_exact_candidate() -> None:
     _assert_probe(load_workflow(WORKFLOW))
 
 
-def test_release_routes_the_same_arm_scheduler_as_the_probe() -> None:
+def test_release_keeps_baseline_arm_topology_until_sharding_is_accepted() -> None:
     catalog = json.loads((ROOT / "scripts/release-platforms.json").read_text(encoding="utf-8"))
     arm = next(row for row in catalog if row["binary_name"] == "apm-darwin-arm64")
     caller = workflow_job(load_workflow(ROOT / ".github/workflows/build-release.yml"), "platforms")
@@ -112,9 +112,13 @@ def test_release_routes_the_same_arm_scheduler_as_the_probe() -> None:
     assert caller["with"]["integration-splitting-algorithm"] == (
         "${{ matrix.integration_splitting_algorithm }}"
     )
-    assert arm["integration_shard_count"] == 2
-    assert arm["integration_xdist_workers"] == 3
-    assert arm["integration_splitting_algorithm"] == "least_duration"
+    assert arm["integration_shard_count"] == 1
+    assert arm["integration_xdist_workers"] == 4
+    assert arm["integration_splitting_algorithm"] == "duration_based_chunks"
+    variants = workflow_job(load_workflow(WORKFLOW), "integration")["strategy"]["matrix"]["include"]
+    baseline = next(row for row in variants if row["variant"] == "baseline")
+    assert baseline["count"] == arm["integration_shard_count"]
+    assert baseline["workers"] == arm["integration_xdist_workers"]
 
 
 @pytest.mark.parametrize(

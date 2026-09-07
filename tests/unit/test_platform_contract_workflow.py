@@ -424,15 +424,11 @@ def test_platform_catalog_retains_all_native_and_non_live_selections() -> None:
         "apm-windows-x86_64": "windows-latest",
     }
     assert rows["apm-darwin-x86_64"]["integration_markers"] == "lifecycle_smoke and not live"
-    assert rows["apm-darwin-arm64"]["integration_shard_count"] == 2
-    assert rows["apm-darwin-arm64"]["integration_xdist_workers"] == 3
-    assert rows["apm-darwin-arm64"]["integration_splitting_algorithm"] == "least_duration"
     assert all(
         row["integration_shard_count"] == 1
         and row["integration_xdist_workers"] == 4
         and row["integration_splitting_algorithm"] == "duration_based_chunks"
-        for name, row in rows.items()
-        if name != "apm-darwin-arm64"
+        for row in rows.values()
     )
     assert all(
         row["integration_markers"] == "not live"
