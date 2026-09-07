@@ -89,11 +89,11 @@ jobs:
           - variant: proposed
             shard: 1
             count: 2
-            workers: 2
+            workers: 3
           - variant: proposed
             shard: 2
             count: 2
-            workers: 2
+            workers: 3
     uses: ./.github/workflows/release-integration.yml
     permissions:
       contents: read

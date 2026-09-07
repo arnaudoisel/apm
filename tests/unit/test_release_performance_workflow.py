@@ -61,8 +61,8 @@ def _assert_probe(workflow: dict) -> None:
     assert integration["strategy"]["fail-fast"] is False
     assert integration["strategy"]["matrix"]["include"] == [
         {"variant": "baseline", "shard": 1, "count": 1, "workers": 4},
-        {"variant": "proposed", "shard": 1, "count": 2, "workers": 2},
-        {"variant": "proposed", "shard": 2, "count": 2, "workers": 2},
+        {"variant": "proposed", "shard": 1, "count": 2, "workers": 3},
+        {"variant": "proposed", "shard": 2, "count": 2, "workers": 3},
     ]
     inputs = integration["with"]
     assert inputs["candidate-artifact-name"] == "benchmark-arm-candidate-${{ github.run_attempt }}"
@@ -113,7 +113,7 @@ def test_release_routes_the_same_arm_scheduler_as_the_probe() -> None:
         "${{ matrix.integration_splitting_algorithm }}"
     )
     assert arm["integration_shard_count"] == 2
-    assert arm["integration_xdist_workers"] == 2
+    assert arm["integration_xdist_workers"] == 3
     assert arm["integration_splitting_algorithm"] == "least_duration"
 
 

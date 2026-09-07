@@ -404,7 +404,7 @@ the build independently; all remain required at the final gate.
    and tested.
 
 Unix integration uses the shared `release-integration.yml` runner. macOS ARM
-uses two outer shards with two workers each; other native Unix lanes use one
+uses two outer shards with three workers each; other native Unix lanes use one
 shard with four workers. ARM uses `least_duration` assignment, preserving
 relative order within each shard. Every shard must succeed.
 
@@ -562,7 +562,7 @@ compare a later complete release before claiming an end-to-end improvement.
 
 Apply the `ci-performance` PR label to run `ci-release-performance.yml` and
 `ci-source-performance.yml`. The native probe builds one current macOS ARM
-candidate, then compares one four-worker run against two two-worker shards.
+candidate, then compares one four-worker run against two three-worker shards.
 All three consume the same verified archive and the same empty timing
 snapshot, testing cold-history behavior rather than assuming a warm cache.
 The Windows probe compares serial and two-worker execution of the unchanged
