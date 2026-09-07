@@ -2023,6 +2023,34 @@ def _exercise_global_revision_commands(
         _assert_same_state(installed, capture())
         assert_snapshot_set_unchanged(before, ArtifactSnapshotSet.capture(artifact_roots))
 
+    for args, expected_text in (
+        (("deps", "info", source.package.name), source.package.name),
+        (("cache", "info"), "Git repositories"),
+        (("cache", "prune", "--days", "30"), "Pruned 0 SHA group(s)"),
+    ):
+        result = run(
+            args,
+            f"global-compatible-{'-'.join(args[:2])}",
+            command_cwd=manifest_path.parent,
+        )
+        assert expected_text in result.stdout, _result_evidence(result)
+        _assert_same_state(installed, capture())
+        assert_snapshot_set_unchanged(before, ArtifactSnapshotSet.capture(artifact_roots))
+    # targets observes project markers, not the user-scope deployment inventory.
+    targets = run(("targets", "--json"), "global-compatible-targets")
+    target_rows = json.loads(targets.stdout)
+    assert target_rows and all(row["status"] == "inactive" for row in target_rows)
+    # find is a project-relative lookup; legacy absolute global records are not supported.
+    found = run(
+        ("find", str(compiled_path.parent / "skills" / "global-audit" / "SKILL.md")),
+        "global-find-absolute-refusal",
+        command_cwd=manifest_path.parent,
+        expected_returncode=1,
+    )
+    assert "is not tracked by any installed package" in found.stdout, _result_evidence(found)
+    _assert_same_state(installed, capture())
+    assert_snapshot_set_unchanged(before, ArtifactSnapshotSet.capture(artifact_roots))
+
     run(("compile", "--global"), "global-compile-a")
     assert "# revision-a" in compiled_path.read_text(encoding="ascii")
     compiled_a = compiled_path.read_bytes()
