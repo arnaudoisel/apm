@@ -85,6 +85,30 @@ FORBIDDEN_NETWORK_ENV = ("APM_RUN_INTEGRATION_TESTS",)
 FORBIDDEN_CREDENTIAL_EXPRESSIONS = (*FORBIDDEN_CREDENTIAL_ENV, "github.token")
 
 
+def test_lifecycle_evidence_is_executed_in_required_candidate_lanes() -> None:
+    """A saved receipt cannot replace either required executing provider lane."""
+    smoke = workflow_job(load_workflow(REPO_ROOT / ".github/workflows/ci.yml"), LIFECYCLE_SMOKE_JOB)
+    step = workflow_step(smoke, "Execute changed lifecycle contracts")
+    assert "scripts/check_lifecycle_evidence.py" in step["run"]
+    assert '--base "$LIFECYCLE_BASE" --head "$LIFECYCLE_HEAD" --lane pr' in step["run"]
+    assert "github.event.pull_request.base.sha" in step["env"]["LIFECYCLE_BASE"]
+    assert "github.event.merge_group.base_sha" in step["env"]["LIFECYCLE_BASE"]
+    assert step["env"]["LIFECYCLE_HEAD"] == "${{ github.sha }}"
+    checkout = next(s for s in smoke["steps"] if "actions/checkout@" in s.get("uses", ""))
+    assert checkout["with"]["fetch-depth"] == 0
+    integration = workflow_job(
+        load_workflow(MERGE_GROUP_INTEGRATION_WORKFLOW), MERGE_GROUP_INTEGRATION_JOB
+    )
+    full = workflow_step(integration, "Execute full lifecycle contracts")
+    assert full["if"] == "matrix.shard == 1"
+    assert "scripts/check_lifecycle_evidence.py" in full["run"]
+    assert '--base "$LIFECYCLE_BASE" --head "$LIFECYCLE_HEAD" --lane full' in full["run"]
+    assert full["env"]["LIFECYCLE_BASE"] == "${{ github.event.merge_group.base_sha }}"
+    assert full["env"]["LIFECYCLE_HEAD"] == "${{ github.event.merge_group.head_sha }}"
+    assert 'git fetch --no-tags origin "$LIFECYCLE_BASE" "$LIFECYCLE_HEAD"' in full["run"]
+    assert "continue-on-error" not in step and "continue-on-error" not in full
+
+
 def _pytest_ini_markers() -> list[str]:
     """The registered marker declarations from
     [tool.pytest.ini_options].markers in pyproject.toml -- the single

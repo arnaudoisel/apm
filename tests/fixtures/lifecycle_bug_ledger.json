@@ -1,6 +1,13 @@
 {
   "schema_version": 1,
   "scope": "Representative post-0.26 escaped defects with reviewable regression evidence; this is not an issue-count census.",
+  "lifecycle_contracts": [],
+  "non_runtime_changes": [
+    {
+      "paths": ["scripts/check_lifecycle_evidence.py", "scripts/lifecycle_contracts.py"],
+      "reason": "Repository-only lifecycle evidence provider and authored-contract validator; neither module is shipped in apm_cli or invoked by an APM command. Exercised by tests/unit/scripts/test_lifecycle_evidence.py and the existing quality/CI topology gates."
+    }
+  ],
   "property_catalog": [
     {
       "id": "filesystem.open_world_observation",

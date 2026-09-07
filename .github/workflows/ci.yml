@@ -520,6 +520,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0
 
     - name: Set up Python
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -551,3 +553,19 @@ jobs:
         uv run --extra dev pytest -p no:cacheprovider -q --strict-markers \
           -n 2 --dist loadgroup \
           -m 'lifecycle_smoke and not lifecycle_merge_group' tests/integration
+
+    - name: Execute changed lifecycle contracts
+      env:
+        LIFECYCLE_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        LIFECYCLE_HEAD: ${{ github.sha }}
+      run: |
+        uv run --extra dev python scripts/check_lifecycle_evidence.py \
+          --base "$LIFECYCLE_BASE" --head "$LIFECYCLE_HEAD" --lane pr \
+          --report "$RUNNER_TEMP/lifecycle-evidence-pr.json"
+
+    - name: Upload lifecycle evidence
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: lifecycle-evidence-pr
+        path: ${{ runner.temp }}/lifecycle-evidence-pr.json
