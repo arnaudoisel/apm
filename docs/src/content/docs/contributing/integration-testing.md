@@ -107,11 +107,16 @@ remain separate obligations.
 
 #### CI lanes
 
-The required `ci.yml` `lifecycle-smoke` job retains its six-minute limit,
-hermetic marker selection, and deterministic `pr` evidence lane.
-`ci-integration.yml` runs the complete integration family and the `full`
-evidence lane on merge-group candidates. `tests/quality/test_ci_topology.py`
-guards this wiring; do not change jobs or required-check policy to waive P8.
+The required `ci.yml` `lifecycle-smoke` job has a 12-minute whole-job timeout.
+Hermetic smoke defers exact contracted deterministic nodes to the immediately
+following native `pr` gate, avoiding duplicate execution without importing
+receipts. `ci-integration.yml` runs the complete merge-group integration family;
+its native `full` evidence step has a 20-minute timeout.
+Standard PR checks cover all base branches, including stacked PRs, subject to
+existing path filters; secret-bearing integration remains merge-group-only.
+`tests/quality/test_ci_topology.py` and
+`tests/unit/test_security_workflow_contracts.py` guard this wiring; do not change
+jobs or required-check policy to waive P8.
 
 For focused smoke feedback only:
 
