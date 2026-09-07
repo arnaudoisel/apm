@@ -236,7 +236,7 @@ def test_package_skill_root_alias_preserves_authorization(
     references.mkdir()
     (references / "safe.md").write_text("safe resource\n", encoding="utf-8")
     if package_type is PackageType.MARKETPLACE_PLUGIN:
-        normalize_plugin_directory(source)
+        normalize_plugin_directory(source, plugin_json_path=manifest)
     outside = tmp_path / "outside"
     outside.mkdir()
     secret = outside / "secret.md"

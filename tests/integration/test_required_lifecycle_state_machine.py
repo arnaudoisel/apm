@@ -1974,7 +1974,9 @@ def test_required_global_lock_ignores_inactive_experimental_resolver(
         assert not (mount / "Documents" / "Cowork" / "skills" / "inactive-resolver").exists()
 
 
+@pytest.mark.parametrize("aliased_home", [False, True])
 def test_required_global_audit_rule_matrix_for_external_roots(
+    aliased_home: bool,
     tmp_path: Path,
     apm_binary_path: Path,
 ) -> None:
@@ -1995,6 +1997,15 @@ def test_required_global_audit_rule_matrix_for_external_roots(
         sentinel_path.write_bytes(f"{target}-owned-by-user\n".encode("ascii"))
 
     environment = dict(source.environment)
+    if aliased_home:
+        alias = scenario.isolated.root / "home-alias"
+        try:
+            alias.symlink_to(scenario.isolated.home, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("directory symlinks unavailable")
+        environment["HOME"] = str(alias)
+        environment["USERPROFILE"] = str(alias)
+        environment["APM_HOME"] = str(alias / ".apm")
     for target, root in external_roots.items():
         environment[_EXTERNAL_USER_ROOT_ENV[target]] = str(root)
 
