@@ -118,6 +118,11 @@ _TRANSITION_PROPERTIES = {
     "frozen_refusal": frozenset({"transaction.failed_command_preserves_state"}),
     "uninstall": frozenset({"ownership.preserve_unowned"}),
     "audit_empty": frozenset({"outcome.status_matches_state"}),
+    "inspect_installed": frozenset({"filesystem.open_world_observation"}),
+    "export_lock": frozenset({"source.ref_cache_coherent"}),
+    "clean_sources": frozenset({"source.ref_cache_coherent", "ownership.preserve_unowned"}),
+    "clean_cache": frozenset({"filesystem.open_world_observation"}),
+    "legacy_update": frozenset({"source.ref_cache_coherent"}),
 }
 _VARIANTS = ("project", "global-canonical", "global-aliased")
 
@@ -281,11 +286,16 @@ class _LifecycleReferenceModel(RuleBasedStateMachine):
         return self.fixture.skill_path
 
     def _run(
-        self, args: tuple[str, ...], operation: str, expected_returncode: int = 0
+        self,
+        args: tuple[str, ...],
+        operation: str,
+        expected_returncode: int = 0,
+        *,
+        command_cwd: Path | None = None,
     ) -> CommandResult:
         result = self.scenario.runner.run(
             args,
-            cwd=self.fixture.invoke_cwd,
+            cwd=command_cwd or self.fixture.invoke_cwd,
             env=self.fixture.environment,
             scenario_id=self._next_id(operation),
         )
@@ -474,6 +484,101 @@ class _LifecycleReferenceModel(RuleBasedStateMachine):
             assert self.published_commit[:7] in result.stdout, _result_evidence(result)
         _assert_same_state(state, self._state())
         assert_snapshot_set_unchanged(before, self._capture())
+
+    @rule()
+    @precondition(lambda self: self.fixture.global_scope and self.materialized and self.clean)
+    def inspect_installed(self) -> None:
+        before, state = self._capture(), self._state()
+        for args in (
+            ("deps", "list", "--global"),
+            ("deps", "tree", "--global"),
+            ("deps", "why", _PACKAGE_NAME, "--global", "--json"),
+            ("view", _PACKAGE_NAME, "--global"),
+            ("info", _PACKAGE_NAME, "--global"),
+        ):
+            result = self._run(args, f"inspect-{'-'.join(args[:2])}")
+            assert _PACKAGE_NAME in result.stdout, _result_evidence(result)
+            _assert_same_state(state, self._state())
+            assert_snapshot_set_unchanged(before, self._capture())
+        info = self._run(
+            ("deps", "info", _PACKAGE_NAME), "deps-info", command_cwd=self.fixture.audit_cwd
+        )
+        assert _PACKAGE_NAME in info.stdout, _result_evidence(info)
+        self._run(("cache", "info"), "cache-info")
+        pruned = self._run(("cache", "prune", "--days", "30"), "cache-prune")
+        assert "Pruned 0 SHA group(s)" in pruned.stdout, _result_evidence(pruned)
+        targets = self._run(("targets", "--json"), "targets-project-only")
+        rows = json.loads(targets.stdout)
+        assert rows and all(row["status"] == "inactive" for row in rows)
+        found = self._run(
+            ("find", str(self.skill_path)),
+            "find-global-refusal",
+            1,
+            command_cwd=self.fixture.audit_cwd,
+        )
+        assert "is not tracked by any installed package" in " ".join(found.stdout.split())
+        _assert_same_state(state, self._state())
+        assert_snapshot_set_unchanged(before, self._capture())
+
+    @rule()
+    @precondition(lambda self: self.fixture.global_scope and self.materialized and self.clean)
+    def export_lock(self) -> None:
+        before, state = self._capture(), self._state()
+        for format_name in ("cyclonedx", "spdx"):
+            result = self._run(
+                ("lock", "export", "--global", "--format", format_name), f"export-{format_name}"
+            )
+            document = json.loads(result.stdout)
+            assert document.get("bomFormat") == "CycloneDX" or document.get("spdxVersion")
+            assert self.installed_commit in result.stdout, _result_evidence(result)
+            _assert_same_state(state, self._state())
+            assert_snapshot_set_unchanged(before, self._capture())
+
+    @rule()
+    @precondition(lambda self: self.fixture.global_scope and self.materialized and self.clean)
+    def clean_cache(self) -> None:
+        before, state = self._capture(), self._state()
+        self._run(("cache", "clean", "--yes"), "clean-cache")
+        _assert_same_state(state, self._state())
+        assert_snapshot_set_unchanged(before, self._capture())
+
+    @rule()
+    @precondition(lambda self: self.fixture.global_scope and self.materialized and self.clean)
+    def clean_sources(self) -> None:
+        before, state = self._capture(), self._state()
+        self._run(
+            ("deps", "clean", "--dry-run"), "clean-preview", command_cwd=self.fixture.audit_cwd
+        )
+        assert_snapshot_set_unchanged(before, self._capture())
+        self._run(("deps", "clean", "--yes"), "clean-sources", command_cwd=self.fixture.audit_cwd)
+        assert not (self.project.root / "apm_modules").exists()
+        assert self.skill_path.read_bytes() == (
+            _SKILL_BYTES + f"\nrevision-{self.installed_revision}\n".encode("ascii")
+        )
+        result = self._run(
+            ("audit", "--ci", "--no-policy", "--no-fail-fast", "--format", "json"),
+            "audit-missing-sources",
+            1,
+            command_cwd=self.fixture.audit_cwd,
+        )
+        assert json.loads(result.stdout)["passed"] is False
+        self._run(self.fixture.install_args, "rehydrate-sources")
+        _assert_same_state(state, self._state())
+        assert_snapshot_set_unchanged(before, self._capture())
+
+    @rule()
+    @precondition(lambda self: self.fixture.global_scope and self.materialized and self.clean)
+    def legacy_update(self) -> None:
+        before = self._capture()
+        self._run(("deps", "update", "--global", "--parallel-downloads", "0"), "legacy-update")
+        self.installed_revision = self.published_revision
+        self.installed_commit = self.published_commit
+        assert_snapshot_changes_within(
+            before,
+            self._capture(),
+            exact_paths=self.fixture.exact_paths,
+            tree_prefixes=self.fixture.tree_prefixes,
+        )
 
     @rule()
     @precondition(lambda self: self.fixture.global_scope and self.declared and self.materialized)
@@ -674,14 +779,20 @@ def _mandatory_replay(model: _LifecycleReferenceModel) -> None:
             [
                 model.compile,
                 model.lock,
+                model.inspect_installed,
+                model.export_lock,
                 model.publish,
                 model.outdated,
                 model.frozen_replay,
                 model.update,
                 model.compile,
+                model.export_lock,
+                model.legacy_update,
                 model.frozen_replay,
                 model.frozen_refusal,
                 model.reinstall,
+                model.clean_cache,
+                model.clean_sources,
             ]
         )
     operations.extend(

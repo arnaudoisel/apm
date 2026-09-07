@@ -1323,7 +1323,6 @@ def test_required_legacy_content_hash_upgrade_preserves_skills_and_converges(
         "legacy-hash-kit",
         skill="legacy-hash",
     )
-    package = source.package
     consumer = scenario.consumers.create(
         "legacy-hash-consumer",
         dependencies=(source.dependency,),
@@ -1358,7 +1357,10 @@ def test_required_legacy_content_hash_upgrade_preserves_skills_and_converges(
     prior_deployed_files = list(locked_dependency["deployed_files"])
     prior_deployed_hashes = dict(locked_dependency["deployed_file_hashes"])
 
-    cached_package = consumer.root / "apm_modules" / package.name
+    _, installed_dependency = _single_locked_dependency(consumer.root)
+    cached_package = installed_dependency.to_dependency_ref().get_install_path(
+        consumer.root / "apm_modules"
+    )
     receipt = cached_package / ".apm" / ".plugin-skill-sources.json"
     assert receipt.is_file()
     receipt.unlink()
@@ -1451,7 +1453,10 @@ def test_required_parallel_fresh_fetch_bypasses_legacy_cache_upgrade(
         scenario_id="parallel-fresh-plugin-establish",
     )
 
-    cached_package = consumer.root / "apm_modules" / source.package.name
+    _, installed_dependency = _single_locked_dependency(consumer.root)
+    cached_package = installed_dependency.to_dependency_ref().get_install_path(
+        consumer.root / "apm_modules"
+    )
     lock_path = consumer.root / "apm.lock.yaml"
     lock_document = load_yaml(lock_path)
     locked_dependency = lock_document["dependencies"][0]
@@ -1508,7 +1513,7 @@ def test_required_invalid_receiptless_legacy_cache_fails_with_recovery(
     apm_binary_path: Path,
     invalid_cache: str,
 ) -> None:
-    """Reject invalid 0.28 cache state without mutating cache or deployments."""
+    """Reject invalid 0.28 cache state, preserve deployments, then recover."""
     scenario = _new_scenario(
         tmp_path / f"invalid-legacy-cache-{invalid_cache}",
         apm_binary_path,
@@ -1531,7 +1536,10 @@ def test_required_invalid_receiptless_legacy_cache_fails_with_recovery(
         scenario_id="invalid-legacy-plugin-establish",
     )
 
-    cached_package = consumer.root / "apm_modules" / source.package.name
+    _, installed_dependency = _single_locked_dependency(consumer.root)
+    cached_package = installed_dependency.to_dependency_ref().get_install_path(
+        consumer.root / "apm_modules"
+    )
     receipt = cached_package / ".apm" / ".plugin-skill-sources.json"
     assert receipt.is_file()
     receipt.unlink()
@@ -1593,6 +1601,7 @@ def test_required_invalid_receiptless_legacy_cache_fails_with_recovery(
     dump_yaml(lock_document, lock_path)
 
     before_state = LifecycleStateSnapshot.capture(consumer.root, targets=("claude", "codex"))
+    before_artifacts = ArtifactSnapshotSet.capture({"project": consumer.root})
     before_cache = ArtifactSnapshot.capture(cached_package)
     before_external = ArtifactSnapshot.capture(external_root) if external_root is not None else None
     package_link_target = (
@@ -1608,28 +1617,67 @@ def test_required_invalid_receiptless_legacy_cache_fails_with_recovery(
     output = " ".join((result.stdout + result.stderr).split())
 
     assert result.returncode != 0, _result_evidence(result)
-    assert source.package.name in output
-    assert str(cached_package) in "".join(output.split())
-    assert "apm deps clean --yes" in output
-    if invalid_cache == "plugin-path":
-        assert "is invalid" in output
-    elif invalid_cache == "missing-hash":
-        assert "no content hash" in output
-    elif invalid_cache == "missing-apm-yml":
-        assert "required apm.yml is missing" in output
-    elif invalid_cache == "missing-apm-dir":
-        assert "required .apm directory is missing" in output
+    compact_output = "".join(output.split())
+    assert source.package.name in compact_output, _result_evidence(result)
+    rejected_redownload = invalid_cache in {"missing-apm-yml", "missing-apm-dir"}
+    if rejected_redownload:
+        assert "Content hash mismatch" in output, _result_evidence(result)
+        assert "apm install --update" in output
+        assert not cached_package.exists()
+    elif invalid_cache == "package-root-symlink":
+        assert "Cannot verify containment" in output, _result_evidence(result)
+        assert str(cached_package) in compact_output
     else:
-        assert "cache metadata contains a symlink" in output
+        assert str(cached_package) in compact_output
+        assert "apm deps clean --yes" in output
+        if invalid_cache == "plugin-path":
+            assert "is invalid" in output
+        elif invalid_cache == "missing-hash":
+            assert "no content hash" in output
+        else:
+            assert "cache metadata contains a symlink" in output
 
     if package_link_target is not None:
         assert cached_package.is_symlink()
         assert cached_package.readlink() == package_link_target
-    assert_unchanged(before_cache, ArtifactSnapshot.capture(cached_package))
+    if not rejected_redownload:
+        assert_unchanged(before_cache, ArtifactSnapshot.capture(cached_package))
+    assert_snapshot_changes_within(
+        before_artifacts,
+        ArtifactSnapshotSet.capture({"project": consumer.root}),
+        exact_paths={},
+        tree_prefixes={"project": {cached_package.relative_to(consumer.root).as_posix()}},
+    )
     if before_external is not None and external_root is not None:
         assert_unchanged(before_external, ArtifactSnapshot.capture(external_root))
     after_state = LifecycleStateSnapshot.capture(consumer.root, targets=("claude", "codex"))
     _assert_same_state(before_state, after_state)
+
+    # Follow targeted-cache-removal guidance without following a bad root link.
+    if package_link_target is not None:
+        cached_package.unlink()
+    elif cached_package.exists():
+        shutil.rmtree(cached_package)
+    _run_success(
+        scenario,
+        consumer,
+        (*_INSTALL_ARGS, "--update"),
+        environment=source.environment,
+        scenario_id=f"invalid-legacy-plugin-{invalid_cache}-recovery",
+    )
+    assert receipt.is_file()
+    assert (consumer.root / ".claude/skills/legacy-skill/SKILL.md").read_text(
+        encoding="ascii"
+    ) == _skill("legacy-skill")
+    if before_external is not None and external_root is not None:
+        assert_unchanged(before_external, ArtifactSnapshot.capture(external_root))
+    _, recovered_audit = _audit(
+        scenario,
+        consumer,
+        environment=source.environment,
+        scenario_id=f"invalid-legacy-plugin-{invalid_cache}-recovered-audit",
+    )
+    assert recovered_audit["passed"] is True
 
 
 def test_required_dependency_prune_then_uninstall_cascades_owned_state(
@@ -2017,6 +2065,7 @@ def _exercise_global_revision_commands(
         ("deps", "tree", "--global"),
         ("deps", "why", source.package.name, "--global", "--json"),
         ("view", source.package.name, "--global"),
+        ("info", source.package.name, "--global"),
     ):
         result = run(args, f"global-reader-{'-'.join(args[:2])}")
         assert source.package.name in result.stdout, _result_evidence(result)
@@ -2047,7 +2096,9 @@ def _exercise_global_revision_commands(
         command_cwd=manifest_path.parent,
         expected_returncode=1,
     )
-    assert "is not tracked by any installed package" in found.stdout, _result_evidence(found)
+    assert "is not tracked by any installed package" in " ".join(found.stdout.split()), (
+        _result_evidence(found)
+    )
     _assert_same_state(installed, capture())
     assert_snapshot_set_unchanged(before, ArtifactSnapshotSet.capture(artifact_roots))
 
@@ -2059,6 +2110,11 @@ def _exercise_global_revision_commands(
     assert capture().deployment_records == before_lock.deployment_records
     assert capture().files == before_lock.files
     assert_revision(commit_a, "a")
+    locked_a = capture()
+    export_a = run(("lock", "export", "--global"), "global-lock-export-a")
+    assert json.loads(export_a.stdout)["bomFormat"] == "CycloneDX"
+    assert commit_a.sha in export_a.stdout
+    _assert_same_state(locked_a, capture())
 
     installed_a = capture()
     commit_b = _publish_revision(scenario, source, "b")
@@ -2085,6 +2141,10 @@ def _exercise_global_revision_commands(
     assert "# revision-a" not in compiled_path.read_text(encoding="ascii")
     assert compiled_path.read_bytes() != compiled_a
     installed_b = capture()
+    export_b = run(("lock", "export", "--global", "--format", "spdx"), "global-lock-export-b")
+    assert json.loads(export_b.stdout)["spdxVersion"].startswith("SPDX-")
+    assert commit_b.sha in export_b.stdout
+    _assert_same_state(installed_b, capture())
     for args, scenario_id in (
         (("compile", "--global", "--dry-run"), "global-compile-preview-b"),
         (("compile", "--global"), "global-compile-noop-b"),
@@ -2447,6 +2507,8 @@ def test_required_global_audit_rule_matrix_for_external_roots(
     assert_clean("global-audit-after-combo-restore")
 
     before_clean = capture()
+    run(("cache", "clean", "--yes"), "global-cache-clean")
+    _assert_same_state(before_clean, capture())
     run(("deps", "clean", "--dry-run"), "global-deps-clean-preview", command_cwd=physical_apm_home)
     _assert_same_state(before_clean, capture())
     run(("deps", "clean", "--yes"), "global-deps-clean", command_cwd=physical_apm_home)
