@@ -281,15 +281,6 @@ _MARKER_CHECKS: dict[str, tuple[Callable[[], bool], str]] = {
 }
 
 
-def pytest_addoption(parser: pytest.Parser) -> None:
-    """Let provisioned CI selections reject missing runtimes instead of skipping."""
-    parser.addoption(
-        "--strict-runtime-prerequisites",
-        action="store_true",
-        help="Fail collection when a selected test requires an unavailable runtime",
-    )
-
-
 @pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Auto-skip items whose marker precondition is not met.

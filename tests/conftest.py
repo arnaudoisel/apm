@@ -32,6 +32,15 @@ import pytest
 _TMP_HOME = Path(tempfile.mkdtemp(prefix="apm-test-home-"))
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register CI options before integration conftests load during whole-tree collection."""
+    parser.addoption(
+        "--strict-runtime-prerequisites",
+        action="store_true",
+        help="Fail collection when a selected test requires an unavailable runtime",
+    )
+
+
 def _ensure_home_env(home: Path) -> None:
     home_str = str(home)
     os.environ["HOME"] = home_str

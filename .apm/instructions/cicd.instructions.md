@@ -6,13 +6,17 @@ description: "CI/CD Pipeline configuration for PyInstaller binary packaging and 
 # CI/CD Pipeline Instructions
 
 ## Workflow Architecture (Tiered + Merge Queue)
-Five workflows split by trigger and tier. PRs get fast feedback; the heavy
+Core workflows split by trigger and tier. PRs get fast feedback; the heavy
 integration suite runs only at merge time via GitHub Merge Queue
 (microsoft/apm#770).
 
-1. **`ci.yml`** - Tier 1, runs on `pull_request` AND `merge_group`
-   - **Linux-only** (ubuntu-24.04). Combined `build-and-test` job: unit tests + binary build in a single runner. No secrets needed.
-   - Uploads Linux x86_64 binary artifact for downstream integration testing.
+1. **`ci.yml`** - Tier 1, runs on `pull_request`, `merge_group`, and `workflow_call`
+   - Linux unit shards and combined coverage, lint, architecture ratchets,
+     self-check and lifecycle smoke; a bounded Windows compatibility lane.
+     No production secrets needed.
+   - PR-only binary smoke provides early packaging feedback. Merge queue
+     builds its own binary; full release candidates call the source checks
+     and build each native archive separately.
    - Runs in both PR context (fast feedback for contributors) and merge_group
      context (against the tentative merge commit before queue auto-merges).
 2. **`ci-integration.yml`** - Tier 2, `merge_group` trigger only
@@ -26,50 +30,74 @@ integration suite runs only at merge time via GitHub Merge Queue
      This file holds production secrets (`GH_CLI_PAT`, `ADO_APM_PAT`).
      Required-check satisfaction at PR time is handled by `merge-gate.yml`,
      which aggregates all required signals into a single `gate` check.
-3. **`merge-gate.yml`** - single-authority PR-time aggregator
-   - Triggers on `pull_request` only (single trigger - dual-trigger with
-     `pull_request_target` produces SUCCESS+CANCELLED check-run twins via
-     `cancel-in-progress` and poisons branch protection's rollup).
+3. **`merge-gate.yml`** - single-authority PR and merge-queue aggregator
+   - Uses event-specific required checks. Never add a parallel
+     `pull_request_target` gate, which can create duplicate check-run names.
    - One job named `gate`. Polls the Checks API for all entries in the
      workflow's `EXPECTED_CHECKS` env var; aggregates pass/fail into a
      single check-run.
    - Branch protection requires ONLY this one check (`gate`). Adding,
      renaming, or removing an underlying check is a `merge-gate.yml` edit,
      never a ruleset edit. Tide / bors single-authority pattern.
-   - Recovery if the `pull_request` webhook is dropped: empty commit,
-     `gh workflow run merge-gate.yml -f pr_number=NNN`, or close+reopen.
+   - Required results must succeed; skipped or neutral is not passing
+     evidence. Lint and Test Architecture Ratchets are required in both tiers.
    - `.github/CODEOWNERS` requires Lead Maintainer review for any change
      to `.github/workflows/**`.
-4. **`build-release.yml`** - `push` to main, tags, schedule, `workflow_dispatch`
-   - **Linux + Windows** run combined `build-and-test` (unit tests + binary build in one job). Unit tests run on every push for platform-regression signal; **smoke tests are gated to tag/schedule/dispatch only** (promotion boundaries) to avoid duplicating `ci-integration.yml`'s merge-time smoke and to cut redundant codex-binary downloads.
-   - **macOS Intel** uses `build-and-validate-macos-intel` (root node, runs own unit tests - no dependency on `build-and-test`). Builds the binary on every push for early regression feedback; tag/schedule/dispatch promotion runs add marker-bounded `lifecycle_smoke and not live` integration coverage and isolated release validation.
-   - **macOS ARM** uses `build-and-validate-macos-arm` (root node, tag/schedule/dispatch only - ARM runners are extremely scarce with 2-4h+ queue waits). Promotion runs retain the full non-live integration corpus and isolated release validation.
+4. **`build-release.yml`** - main push, tags, schedule, default-branch `repository_dispatch`
+   - Calls **`release-platform.yml`** using the canonical platform catalog
+     in `scripts/release-platforms.json`. Native unit tests and builds are
+     independent. Integration, isolated validation and the Windows installer
+     depend only on their own platform's build.
+   - Ordinary main pushes retain four lanes, including macOS Intel.
+     Full tag/schedule/manual qualification adds macOS ARM and source CI.
+     Intel retains `lifecycle_smoke and not live`; ARM retains full non-live
+     integration coverage. Neither platform drops native unit coverage.
+   - Tags can promote an exact-SHA, fully qualified trusted candidate;
+     partial main builds and PR artifacts are not release evidence.
+     Missing matching candidates require a fresh full build.
    - Publication jobs do not receive `ADO_APM_PAT`; live ADO PAT acceptance is an explicit `ado_pat_e2e` mode in `auth-acceptance.yml`. Full 5-platform binary output (linux x86_64/arm64, darwin x86_64/arm64, windows x86_64).
-5. **`ci-runtime.yml`** - nightly schedule, manual dispatch, path-filtered push
+5. **`ci-runtime.yml`** - nightly schedule, default-branch repository dispatch, path-filtered push
    - **Linux x86_64 only**. Live inference smoke tests (`apm run`) isolated from release pipeline.
    - Uses `GH_MODELS_PAT` for GitHub Models API access.
    - Failures do not block releases - annotated as warnings.
 
 ## Platform Testing Strategy
-- **PR time**: Linux-only combined build-and-test in `ci.yml`. Catches logic bugs and dependency issues before merge. Windows + macOS are tested post-merge (platform-specific issues are rare and the full matrix runs on every push to main).
-- **Post-merge**: Full 5-platform matrix (linux x86_64/arm64, darwin x86_64/arm64, windows x86_64) catches remaining platform-specific issues on main.
-- **Rationale**: ci.yml has always been Linux-only - Windows and macOS are covered by `build-release.yml` on every push to main. This keeps PR feedback fast while still catching platform issues before release.
+- **PR time**: Linux source checks and packaging smoke, plus a bounded
+  Windows compatibility gate. Platform-specific failures remain possible.
+- **Post-merge**: Four native unit/build lanes; full qualification includes
+  all five architectures and every applicable integration/validation gate.
+- **Publication**: Requires successful source and native qualification.
+  Parallelizing these checks must never remove a required result.
 
 ## PyInstaller Binary Packaging
 - **CRITICAL**: Uses `--onedir` mode (NOT `--onefile`) for faster CLI startup performance
 - **Binary Structure**: Creates `dist/{binary_name}/apm` (nested directory containing executable + dependencies)
 - **Platform Naming**: `apm-{platform}-{arch}` (e.g., `apm-darwin-arm64`, `apm-linux-x86_64`)
-- **Spec File**: `build/apm.spec` handles data bundling, hidden imports, and UPX compression
+- **Spec File**: `build/apm.spec` handles data bundling and hidden imports.
+  Do not provision UPX: the pinned PyInstaller disables it on non-Windows,
+  while the spec disables it on Windows to avoid antivirus false positives.
 
 ## Artifact Flow Quirks
-- **Upload**: Artifacts include both binary directory + test scripts for isolation testing
-- **Download**: GitHub Actions creates nested structure: `{artifact_name}/dist/{binary_name}/apm`
-- **Release Prep**: Extract binary from nested path using `tar -czf "${binary}.tar.gz" -C "${artifact_dir}/dist" "${binary}"`
+- **Package once**: `scripts/package_release.py` creates each final archive
+  after signing and verifies the embedded version/build SHA.
+- **Upload**: Each native artifact contains `release-assets/` (archive,
+  checksum, metadata) and selected validation scripts.
+- **Native consumers**: Verify hashes and identity, then extract the same
+  archive into `dist/{binary_name}`. Do not test an installed older release.
+- **Promotion**: Verify complete immutable run/artifact evidence and copy
+  the ten public archive/checksum files without repackaging. The write-token
+  publisher has no checkout and executes no candidate scripts.
+- **Reruns**: Candidate artifacts are attempt-scoped and promotion downloads
+  exact artifact IDs. Use **Re-run all jobs** to regenerate qualification;
+  a partial rerun must not combine old archives with new test evidence.
 
 ## Critical Testing Phases
 1. **Integration Tests**: Full source code access for comprehensive testing
 2. **Release Validation**: ISOLATION testing - no source checkout, validates exact shipped binary experience
-3. **Path Resolution**: Use symlinks and PATH manipulation for isolated binary testing
+3. **Path Resolution**: Set `APM_BINARY_PATH` explicitly for pytest, so an
+   editable install or ambient PATH cannot silently replace the candidate
+4. **Installer Tests**: New installs and upgrade destinations use the
+   current candidate; an older binary may only seed the upgrade source
 
 ## Inference Testing (Decoupled)
 - Live inference tests (`apm run`) are **isolated** in `ci-runtime.yml` - they do NOT gate releases
@@ -78,16 +106,23 @@ integration suite runs only at merge time via GitHub Merge Queue
 - Rationale: 8 inference executions x 2% failure rate = 14.9% false-negative per release; APM core UVPs require zero live inference
 
 ## Release Flow Dependencies
-- **PR workflow**: Tier 1 only - ci.yml (build-and-test, Linux-only) provides fast feedback. Tier 2 does not run until enqueued.
-- **Merge queue workflow**: ci.yml (Tier 1 against tentative merge ref) + ci-integration.yml (Tier 2: build -> smoke-test -> integration-tests -> release-validation). Queue auto-merges on success; ejects on failure.
-- **Push/Release workflow (Linux + Windows)**: build-and-test -> integration-tests -> release-validation -> create-release -> publish-pypi (gh-aw-compat runs in parallel, informational)
+- **PR workflow**: Tier 1 provides fast feedback; Tier 2 waits for enqueue.
+- **Merge queue workflow**: Tier 1 plus Tier 2's own build. Integration and
+  isolated validation no longer form a serial fan-in; the gate still
+  requires all applicable results.
+- **Fresh release**: Independent native units/build -> per-platform
+  integration/validation/installer -> complete qualification -> verified
+  assets -> publication. Source CI runs alongside the native lanes.
+- **Qualified same-SHA release**: Trusted candidate lookup -> verification
+  -> publication. Qualification cost occurred before tagging, not vanished.
 - **Homebrew distribution**: `microsoft/homebrew-apm` polls the latest public APM release and updates its formula with its own `GITHUB_TOKEN`; this workflow must not send a cross-repository dispatch or hold a tap credential.
-- **Push/Release workflow (macOS Intel)**: build-and-validate-macos-intel (root node: unit tests + build always + conditional `lifecycle_smoke and not live` integration/release-validation) -> create-release
-- **Push/Release workflow (macOS ARM)**: build-and-validate-macos-arm (root node, tag/schedule/dispatch only; full non-live integration corpus and all phases run) -> create-release
 - **Live ADO PAT acceptance**: manual `auth-acceptance.yml` dispatch with `ado_pat_e2e: true` -> exact `live and requires_ado_pat` marker intersection. Invalid credentials fail with production auth diagnostics but do not block publication.
-- **Tag Triggers**: Only `v*.*.*` tags trigger full release pipeline
+- **Tag Triggers**: `v*` tags enter release planning; promotion must verify
+  that the tag and candidate version identify the same release
 - **Artifact Retention**: 30 days for debugging failed releases
-- **Cross-workflow artifacts**: ci-integration.yml builds the binary inline (no cross-workflow artifact transfer); build-release.yml jobs share artifacts within the same workflow run.
+- **Cross-run artifacts**: Only the release candidate protocol may reuse
+  release artifacts, bound to the exact trusted source run and commit.
+  `ci-integration.yml` continues to build its own binary.
 
 ## Branch Protection & Required Checks
 - **Single required check**: branch protection (`main-protection` ruleset id 9294522) requires exactly one status check context: `gate` from `merge-gate.yml`. All other PR-time signals are aggregated by that workflow's poll loop.
@@ -107,13 +142,16 @@ integration suite runs only at merge time via GitHub Merge Queue
 - `APM_RUN_INFERENCE_TESTS` - When `1`, enables live inference tests in validation scripts
 
 ## Performance Considerations
-- **Combined build-and-test**: Eliminates ~1.5m runner re-provisioning overhead by running unit tests and binary build in the same job.
-- **macOS as root nodes**: macOS consolidated jobs run their own unit tests and start immediately - no dependency on Linux/Windows test completion.
+- **Critical path**: Unit tests do not delay native builds. A slow platform
+  does not delay another platform's integration or isolated validation.
+  Account for added runner setup and queue waits when measuring savings.
 - **Native uv caching**: `setup-uv` action with `enable-cache: true` replaces manual `actions/cache@v3` blocks.
-- **Targeted setup-node usage**: Node.js is only installed in `ci-runtime.yml`, macOS consolidated jobs, and integration-tests/release-validation phases (for `apm runtime setup copilot` -> npm install).
-- **macOS runner consolidation**: Each macOS arch has a single consolidated job (build + integration + release-validation). Intel (`build-and-validate-macos-intel`) runs on every push since Intel runners are plentiful and uses marker-bounded non-live lifecycle integration coverage for promotions. ARM (`build-and-validate-macos-arm`) is gated to tag/schedule/dispatch only since ARM runners are extremely scarce (2-4h+ queue waits) and remains the full non-live corpus macOS authority. This avoids serial re-queuing of runners across multiple jobs and redundant corpus replay on Intel.
-- **Unit tests skip macOS**: Python unit tests are platform-agnostic; Linux + Windows coverage is sufficient. macOS-specific validation (binary build, focused Intel integration, full non-live ARM integration, and release validation) still runs via the consolidated jobs.
+- **Runtime provisioning**: `APM_TEST_RUNTIMES` limits setup to selected
+  prerequisites. Strict collection fails rather than silently skipping a
+  selected test when a required runtime is missing.
+- **Duration history**: Persist pytest timings and JUnit outcomes. Timing
+  caches are scheduling hints, never cached pass results or test allowlists.
+  Preserve complete shard coverage and existing fixture-affinity groups.
 - **Tier 2 runs once per merged PR**, not per WIP push, since it triggers on `merge_group` only. Saves the bulk of integration minutes that the previous per-push flow burned.
-- UPX compression when available (reduces binary size ~50%)
 - Python optimization level 2 in PyInstaller
 - Aggressive module exclusions (tkinter, matplotlib, etc.)
