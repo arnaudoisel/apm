@@ -234,6 +234,10 @@ test-named `tmp_path` roots to avoid Git for Windows metadata path limits.
 Retain worker-equivalent directory depth in focused gates so they still
 exercise the paths used by the sharded suite.
 
+When a fixture monkeypatches a temporary config path, reset the config cache at
+setup and again in `finally`. Path monkeypatching alone does not invalidate
+cached config in shard-exposed fixtures.
+
 It is also not an OS/native-code sandbox: executables found through `PATH`
 remain trusted, reflective access to CPython internals or native extensions can
 bypass Python monkey-patches, `file://` access is not confined by the OS, and
@@ -495,19 +499,24 @@ serves the verified archives and the current checkout's `install.ps1` bytes on
 is unchanged. The test also compares the installed candidate executable hash
 with the executable member inside the candidate ZIP.
 
+The Windows isolation root is `tmp_path_factory.mktemp("wi") / "i"`: a short,
+nonexistent child for the shared helper, while the PowerShell install prefix
+still includes spaces and `&`.
+
 ### Windows unit hang diagnostics
 
-The Windows full-unit step in `.github/workflows/release-platform.yml` runs:
+The Windows full-unit step in `.github/workflows/release-unit.yml` runs:
 
 ```sh
-uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal -vv --tb=short --show-capture=no --no-showlocals
+uv run --frozen pytest tests/unit tests/test_console.py -n auto --dist worksteal --durations=50 --store-durations --junitxml=test-results/unit.xml -vv --tb=short --show-capture=no --no-showlocals
 ```
 
 `PYTHONUNBUFFERED=1` keeps named test starts and outcomes visible while the suite runs. Captured test output and local-variable dumps remain disabled. These diagnostics identify candidate unfinished tests, not stack frames or the exact blocked phase; an outcome can appear before fixture teardown completes.
 
 The 60-minute step limit fails closed on hangs. Test selection and parallelism
-are unchanged. The PR-time `windows_compat` gate exercises name visibility
-during setup, call, and teardown after a failed call.
+are unchanged: Windows unit runs still use xdist `-n auto --dist worksteal`.
+The PR-time `windows_compat` gate exercises name visibility during setup, call,
+and teardown after a failed call.
 
 ### GitHub Actions Authentication
 
@@ -629,10 +638,12 @@ Thresholds are 15% per
 paired pytest lane and 10% overall evidence-ready improvement, with 30% as the
 target. Do not treat workflow duration as proposed release time: it waits for
 both variants, and experimental concurrency/cohort waits can add allocation
-cost. Remove the label before unrelated pushes. On failed attempts use **Re-run
-all jobs**; artifacts are immutable and attempt-scoped. Limit an evaluation to
-three full attempts, including image-inconclusive attempts. Production rollout
-requires passing proof plus a maintainer decision.
+cost. Remove the label before unrelated pushes. For a new full attempt, remove
+and reapply `ci-release-rehearsal` to launch a fresh workflow run; do not rely
+on rerunning the same run ID. Rehearsal proofs are attempt-scoped, but canonical
+source CI artifacts use bare names. Limit an evaluation to three full attempts,
+including invalid or image-inconclusive attempts. Production rollout requires
+passing proof plus a maintainer decision.
 
 ## Debugging Test Failures
 

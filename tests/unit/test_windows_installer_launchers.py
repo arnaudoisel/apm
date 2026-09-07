@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.utils.isolated_apm_environment import IsolatedApmEnvironment
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -45,7 +47,9 @@ def test_windows_installer_e2e_covers_bare_subprocess_resolution() -> None:
 
 
 @pytest.mark.windows_compat
-def test_installer_harness_does_not_add_the_test_name_to_native_dll_paths() -> None:
+def test_installer_harness_does_not_add_the_test_name_to_native_dll_paths(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
     """Reserve loader path space without removing the PowerShell quoting scenarios."""
     source = (ROOT / "tests/integration/test_windows_installer_launchers.py").read_text("utf-8")
     tree = ast.parse(source)
@@ -58,10 +62,15 @@ def test_installer_harness_does_not_add_the_test_name_to_native_dll_paths() -> N
         and node.func.value.id == "IsolatedApmEnvironment"
         and node.func.attr == "create"
     )
-    root = create.args[0]
+    root_expression = create.args[0]
+    assert isinstance(root_expression, ast.BinOp) and isinstance(root_expression.op, ast.Div)
+    assert ast.literal_eval(root_expression.right) == "i"
+    root = root_expression.left
     assert isinstance(root, ast.Call) and isinstance(root.func, ast.Attribute)
     assert isinstance(root.func.value, ast.Name) and root.func.value.id == "tmp_path_factory"
     assert root.func.attr == "mktemp" and ast.literal_eval(root.args[0]) == "wi"
+    isolated = IsolatedApmEnvironment.create(tmp_path_factory.mktemp("wi") / "i", base_env={})
+    assert isolated.work_root.is_dir()
     test_script = (ROOT / "scripts/windows/test-install-script.ps1").read_text("utf-8")
     assert "APM Install Test & Edge" in test_script
 

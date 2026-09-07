@@ -38,7 +38,9 @@ def test_windows_installer_exposes_stable_executable(
     candidate = InstallerArchive.from_environment(os.environ, "CANDIDATE")
     baseline = InstallerArchive.from_environment(os.environ, "BASELINE")
     # Keep the harness prefix short; the PowerShell fixture still adds spaces and "&".
-    isolated = IsolatedApmEnvironment.create(tmp_path_factory.mktemp("wi"), base_env=os.environ)
+    isolated = IsolatedApmEnvironment.create(
+        tmp_path_factory.mktemp("wi") / "i", base_env=os.environ
+    )
     environment = isolated.subprocess_env()
     environment["APPDATA"] = str(isolated.home)
     with (

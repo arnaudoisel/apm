@@ -15,6 +15,7 @@ second resolution path.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
@@ -94,11 +95,34 @@ def project(monkeypatch, tmp_path):
     monkeypatch.setattr(config_mod, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(config_mod, "CONFIG_FILE", str(config_dir / "config.json"))
     config_mod._invalidate_config_cache()
-    return tmp_path
+    try:
+        yield tmp_path
+    finally:
+        config_mod._invalidate_config_cache()
 
 
 def _install(args=()):
     return CliRunner().invoke(cli, ["install", "--no-policy", *args])
+
+
+def test_project_fixture_clears_registry_cache_when_its_config_scope_ends(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A temporary config path must not leave its registry in process-global cache."""
+    from apm_cli import config as config_mod
+
+    fixture = project.__wrapped__(monkeypatch, tmp_path)
+    next(fixture)
+    try:
+        config_mod.set_mcp_registry_url(CONFIG_REGISTRY)
+        assert (
+            urlparse(config_mod.get_mcp_registry_url()).hostname
+            == urlparse(CONFIG_REGISTRY).hostname
+        )
+    finally:
+        fixture.close()
+    assert config_mod._config_cache is None
 
 
 def _printed_hosts(output: str) -> set[str]:
