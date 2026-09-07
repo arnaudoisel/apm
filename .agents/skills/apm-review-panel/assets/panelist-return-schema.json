@@ -115,7 +115,7 @@
             },
             "tier": {
               "type": "string",
-              "enum": ["unit", "integration-with-fixtures", "e2e", "manual-only", "static"],
+              "enum": ["unit", "integration-with-fixtures", "e2e", "lifecycle-state-machine", "manual-only", "static"],
               "description": "Tier of evidence. unit: function-level test with mocks at the boundary; cheap, fast, narrow. integration-with-fixtures: real I/O against real fixtures (real files, real subprocess, real network when tagged), no mocked surface for the asserted contract. e2e: full CLI invocation end-to-end, real artifacts, real exit codes. manual-only: only a manual procedure; no automated guardrail. static: lint / type-check / schema validation only. The CEO weights tier against the SURFACE FLOOR named in the test-coverage-expert tier-floor matrix: a `unit` passed evidence on a critical-promise surface (CLI / install / lockfile / auth / hooks / marketplace / cross-module) does NOT silence an opinion-finding from another panelist asking for `integration-with-fixtures` coverage. Required on every evidence block."
             },
             "run_evidence": {
@@ -146,7 +146,26 @@
                 ]
               }
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "outcome": { "const": "passed" },
+                  "tier": { "const": "lifecycle-state-machine" }
+                },
+                "required": ["outcome", "tier"]
+              },
+              "then": {
+                "required": ["test_file", "run_evidence", "assertion_excerpt"],
+                "properties": {
+                  "test_file": { "minLength": 1 },
+                  "run_evidence": { "minLength": 1 },
+                  "assertion_excerpt": { "minLength": 1 }
+                }
+              }
+            }
+          ]
         }
       }
     }
