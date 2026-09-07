@@ -15,7 +15,7 @@ from tests.workflow_contracts import load_workflow, shell_commands, workflow_job
 
 pytestmark = pytest.mark.component
 
-WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/release-platform.yml"
+WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/release-unit.yml"
 TEST_COMMAND = ["uv", "run", "--frozen", "pytest", "tests/unit", "tests/test_console.py"]
 PARALLEL_ARGS = [
     "-n",
@@ -34,7 +34,7 @@ def _assert_windows_diagnostics(workflow: dict) -> None:
     job = workflow_job(workflow, "unit-tests")
     linux = workflow_step(job, "Run unit tests")
     windows = workflow_step(job, "Run unit tests (Windows diagnostics)")
-    assert linux["if"] == "inputs.platform != 'windows'"
+    assert linux["if"] == "inputs.platform != 'windows' && !inputs.performance-probe"
     assert shell_commands(linux) == [TEST_COMMAND + PARALLEL_ARGS]
     assert windows["if"] == "inputs.platform == 'windows'"
     assert windows["timeout-minutes"] == 60

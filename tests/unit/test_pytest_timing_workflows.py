@@ -97,10 +97,19 @@ def assert_release_platform_snapshot(workflow: dict) -> None:
     build = workflow_job(workflow, "build")
     snapshot = workflow_step(build, "Freeze integration scheduling hints")
     assert snapshot["uses"] == ACTION
+    assert snapshot["if"] == (
+        "inputs.full-validation && inputs.platform != 'windows' && "
+        "!inputs.integration-performance-probe"
+    )
     assert snapshot["with"] == {
         "suite": "integration",
         "snapshot": "integration-duration-snapshot-${{ github.run_attempt }}-${{ inputs.binary-name }}",
     }
+    cold_upload = workflow_step(
+        build, "Upload cold integration scheduling hints for performance probe"
+    )
+    assert cold_upload["with"]["name"] == snapshot["with"]["snapshot"]
+    assert cold_upload["with"]["path"] == ".test_durations"
     job = workflow_job(workflow, "integration-tests-shard")
     assert job["uses"] == RELEASE_INTEGRATION
     assert job["needs"] == ["build"]
@@ -111,7 +120,11 @@ def assert_release_platform_snapshot(workflow: dict) -> None:
     assert job["with"]["shard-index"] == "${{ matrix.shard }}"
     assert job["with"]["xdist-workers"] == "${{ inputs.integration-xdist-workers }}"
     assert job["with"]["splitting-algorithm"] == "${{ inputs.integration-splitting-algorithm }}"
-    assert job["with"]["artifact-prefix"] == "${{ github.run_attempt }}-${{ inputs.binary-name }}"
+    assert job["with"]["artifact-prefix"] == (
+        "${{ inputs.integration-performance-probe && inputs.platform != 'windows' && "
+        "format('{0}-{1}-baseline', github.run_attempt, inputs.binary-name) || "
+        "format('{0}-{1}', github.run_attempt, inputs.binary-name) }}"
+    )
     assert job["with"]["runtime-prerequisites"] == "none"
 
 

@@ -585,6 +585,46 @@ job timestamps to include setup and queue delays. Remove the opt-in label
 before unrelated pushes; these measurements are evidence, not required
 release gates or cached pass results.
 
+### Whole-pipeline rehearsal
+
+For whole-pipeline release rehearsal, apply the `ci-release-rehearsal` PR label.
+`ci-release-rehearsal.yml` reuses the five native release-platform workflows,
+canonical source CI, and read-only docs/wheel builds at one current PR merge
+SHA, with no PATs, signing secrets, publishing, or production topology change:
+
+| Surface | Current shape | Rehearsal shape |
+| --- | --- | --- |
+| macOS ARM integration | 1 shard x 4 workers | 2 shards x 3 workers |
+| Linux x64 integration | 1 shard x 4 workers | 2 shards x 4 workers |
+| macOS Intel unit | 1 shard x auto workers | 2 shards x 4 workers |
+
+Each actual runner records image, Python, OS, CPU, lockfile, source, candidate
+identity, runner trace, and timestamp proof, then waits up to 15 minutes for
+all three matching cohort members before pytest. Missing, stale, or mismatched proof stops before
+expensive tests. Integration pairs use exact archive bytes from the same build;
+source-unit pairs use the identical SHA; final comparison still requires exact
+original case/outcome parity.
+
+The comparison retains all five production
+`Integration Tests` fan-ins and `Native Candidate Gate` jobs, measures each
+observed dependency-to-verdict delay, and propagates the selected variant
+through the per-platform DAG while unchanged platforms keep their actual gate
+completion floor. Proposed native-gate completion timestamps are modeled, not
+independently measured; report that assumption. Only experiment-specific
+both-world checkers, such as `Intel Unit Performance Probe`, are excluded.
+Qualification recording, asset verification, signing, and publishing remain
+outside the unprivileged measurement. Read `release-rehearsal-comparison-<attempt>`,
+`performance-evidence*`, and `performance-cohort*`.
+
+Thresholds are 15% per
+paired pytest lane and 10% overall evidence-ready improvement, with 30% as the
+target. Do not treat workflow duration as proposed release time: it waits for
+both variants, and experimental concurrency/cohort waits can add allocation
+cost. Remove the label before unrelated pushes. On failed attempts use **Re-run
+all jobs**; artifacts are immutable and attempt-scoped. Limit an evaluation to
+three full attempts, including image-inconclusive attempts. Production rollout
+requires passing proof plus a maintainer decision.
+
 ## Debugging Test Failures
 
 ### Smoke Test Failures

@@ -97,6 +97,7 @@ jobs:
     uses: ./.github/workflows/release-integration.yml
     permissions:
       contents: read
+      actions: read
     with:
       runner: macos-latest
       platform: darwin
@@ -115,6 +116,7 @@ jobs:
       artifact-prefix: arm-probe-${{ matrix.variant }}-${{ github.run_attempt }}
       evidence-variant: ${{ matrix.variant }}
       evidence-selection: tests/integration/ -m not live
+      performance-cohort: integration-${{ github.run_attempt }}-apm-darwin-arm64
 
   compare:
     name: Compare ARM Integration Performance

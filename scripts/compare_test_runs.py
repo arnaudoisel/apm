@@ -108,6 +108,24 @@ def _identity(
     }
 
 
+def capture_identity(
+    source_sha: str, selection: str, candidate_metadata: Path | None = None
+) -> dict[str, object]:
+    """Capture the same identity before execution and in the final test report."""
+    candidate = json.loads(candidate_metadata.read_text("utf-8")) if candidate_metadata else None
+    return _identity(source_sha, selection, candidate, _environment())
+
+
+def validate_identity(identity: dict[str, object]) -> dict[str, object]:
+    """Validate an already captured identity without replacing its environment."""
+    return _identity(
+        identity["source_sha"],
+        identity["selection"],
+        identity["candidate"],
+        identity["environment"],
+    )
+
+
 def _positive_seconds(value: object) -> float:
     if (
         isinstance(value, bool)
@@ -137,8 +155,7 @@ def capture(
 ) -> Report:
     """Read one real pytest JUnit report without equating skips with passes."""
     _shard_identity(variant, shard, shard_count)
-    candidate = json.loads(candidate_metadata.read_text("utf-8")) if candidate_metadata else None
-    identity = _identity(source_sha, selection, candidate, _environment())
+    identity = capture_identity(source_sha, selection, candidate_metadata)
     parser = ET.XMLParser(target=_JUnitTreeBuilder())  # noqa: S314 - rejects all DTD declarations.
     root = ET.parse(junit, parser=parser).getroot()  # noqa: S314 - DTDs rejected before expansion.
     suites = [root] if root.tag == "testsuite" else list(root)
@@ -186,13 +203,7 @@ def read_report(path: Path) -> Report:
         raise ValueError(f"Invalid report schema: {path}")
     if data["schema_version"] != 1 or not isinstance(data.get("identity"), dict):
         raise ValueError(f"Invalid report identity: {path}")
-    raw_identity = data["identity"]
-    identity = _identity(
-        raw_identity["source_sha"],
-        raw_identity["selection"],
-        raw_identity["candidate"],
-        raw_identity["environment"],
-    )
+    identity = validate_identity(data["identity"])
     _shard_identity(data["variant"], data["shard"], data["shard_count"])
     elapsed = _positive_seconds(data["elapsed_seconds"])
     entries = data["cases"]

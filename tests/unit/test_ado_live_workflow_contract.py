@@ -24,7 +24,7 @@ RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release-platform.yml"
 AUTH_WORKFLOW = ROOT / ".github" / "workflows" / "auth-acceptance.yml"
 INTEGRATION_SCRIPT = ROOT / "scripts" / "test-integration.sh"
 LIVE_ADO_SELECTOR = "live and requires_ado_pat"
-RELEASE_INTEGRATION_JOBS = ("integration-tests-shard",)
+RELEASE_INTEGRATION_JOBS = ("integration-tests-shard", "integration-tests-proposed-shard")
 
 
 def _walk_nodes(value: Any) -> list[dict[str, Any]]:

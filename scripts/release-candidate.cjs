@@ -15,6 +15,7 @@ const RERUN_ALL_JOBS_HINT = "Use Re-run all jobs to regenerate complete candidat
 const CONFIG_HASH_FILES = [
   ".github/workflows/build-release.yml",
   ".github/workflows/release-platform.yml",
+  ".github/workflows/release-unit.yml",
   ".github/workflows/release-integration.yml",
   ".github/workflows/docs-build.yml",
   ".github/workflows/pypi-distributions.yml",

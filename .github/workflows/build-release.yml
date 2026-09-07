@@ -63,6 +63,9 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     uses: ./.github/workflows/release-platform.yml
+    permissions:
+      contents: read
+      actions: read
     with:
       runner: ${{ matrix.runner }}
       platform: ${{ matrix.platform }}

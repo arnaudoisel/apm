@@ -185,6 +185,9 @@ jobs:
         # so xdist serializes them on a single worker (race-safe).
         shard: [1, 2, 3, 4]
     uses: ./.github/workflows/release-integration.yml
+    permissions:
+      contents: read
+      actions: read
     with:
       runner: ubuntu-24.04
       platform: linux
