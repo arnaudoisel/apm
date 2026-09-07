@@ -1,8 +1,10 @@
 """Required, subprocess-free contracts for lifecycle interaction obligations."""
 
+import gc
 import itertools
 import json
 import shlex
+import weakref
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -369,6 +371,12 @@ def test_nonexecuted_or_known_gap_evidence_earns_no_credit(status: str) -> None:
     assert report["rejected_evidence"][row.id]["status"] == status
 
 
+def test_tag_advancement_is_required_only_for_tagged_updates() -> None:
+    assert {row.id for row in _ALL_ROWS if "advance-tag" in required_transitions(row)} == {
+        row.id for row in _ALL_ROWS if row.command == "update" and row.ref_state == "tag"
+    }
+
+
 @pytest.mark.parametrize(
     ("field", "cache_state", "omitted_action"),
     (
@@ -377,36 +385,54 @@ def test_nonexecuted_or_known_gap_evidence_earns_no_credit(status: str) -> None:
         ("transitions", "warm", "remove-materialization"),
         ("transitions", "warm", "warm-materialize"),
         ("transitions", "cold", "clear-cache"),
+        ("transitions", "warm", "advance-tag"),
     ),
 )
 def test_disabling_assertions_or_actions_loses_execution_credit(
     tmp_path: Path, field: str, cache_state: str | None, omitted_action: str | None
 ) -> None:
     row = next(
-        row for row in INTERACTION_ROWS if cache_state is None or row.cache_state == cache_state
+        row
+        for row in INTERACTION_ROWS
+        if (cache_state is None or row.cache_state == cache_state)
+        and (
+            omitted_action != "advance-tag" or (row.command == "update" and row.ref_state == "tag")
+        )
     )
     complete = _execution(row)
+    if omitted_action is not None:
+        complete = replace(
+            complete, transitions=tuple(sorted({*complete.transitions, omitted_action}))
+        )
     positive = coverage_report(
         _ALL_ROWS, _roundtrip_execution(tmp_path, complete), input_revision="test-fixture"
     )
     assert positive["covered_pairs"]
     assert positive["rejected_evidence"] == {}
+    if omitted_action == "advance-tag":
+        triple = next(
+            triple for triple in positive["triples"] if triple["id"] == "aliased-ref-warm-update"
+        )
+        assert triple["witnesses"] == [row.id]
     remaining = (
         tuple(step for step in complete.transitions if step != omitted_action)
         if omitted_action is not None
         else ()
     )
-    report = coverage_report(
-        _ALL_ROWS,
-        _roundtrip_execution(tmp_path, replace(complete, **{field: remaining})),
-        input_revision="test-fixture",
-    )
+    incomplete = _roundtrip_execution(tmp_path, replace(complete, **{field: remaining}))
+    report = coverage_report(_ALL_ROWS, incomplete, input_revision="test-fixture")
     assert report["covered_pairs"] == []
+    assert all(not triple["witnesses"] for triple in report["triples"])
     assert row.id in report["rejected_evidence"]
     if omitted_action is not None:
         rejection = report["rejected_evidence"][row.id]
         assert rejection["missing_transitions"] == [omitted_action]
         assert rejection["missing_laws"] == []
+    with pytest.raises(AssertionError, match="Unmet lifecycle obligation"):
+        assert_complete_evidence(
+            _ALL_ROWS,
+            (*(_execution(item) for item in _ALL_ROWS if item.id != row.id), *incomplete),
+        )
 
 
 def _roundtrip_execution(path: Path, evidence: CaseExecution) -> tuple[CaseExecution, ...]:
@@ -516,8 +542,12 @@ def test_junit_veto_preserves_original_diagnostic_and_artifact_context(
 
 
 @pytest.mark.parametrize("artifact_count", (2, 20))
+@pytest.mark.parametrize("malformed_mutations", (False, True))
 def test_combined_report_parses_each_artifact_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artifact_count: int
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_count: int,
+    malformed_mutations: bool,
 ) -> None:
     from tests.utils.lifecycle_mutations import mutation_report
 
@@ -535,6 +565,8 @@ def test_combined_report_parses_each_artifact_once(
             name="lifecycle_execution",
             value=json.dumps(asdict(_execution(row))),
         )
+        if malformed_mutations:
+            ET.SubElement(properties, "property", name="lifecycle_mutation", value="{}")
         if index == 0:
             ET.SubElement(case, "failure", message="later failure")
         path = shard_dir / f"shard-{index:02d}.xml"
@@ -544,10 +576,17 @@ def test_combined_report_parses_each_artifact_once(
     output, mutations = tmp_path / "interactions.json", tmp_path / "mutations.json"
     parse = ET.parse
     parsed_paths = []
+    parsed_roots = []
 
     def counted_parse(path: Path) -> ET.ElementTree:
         parsed_paths.append(path)
-        return parse(path)
+        tree = parse(path)
+        parsed_roots.append(weakref.ref(tree.getroot()))
+        gc.collect()
+        assert sum(reference() is not None for reference in parsed_roots) <= 2, (
+            "Reporter retained prior JUnit roots during ingestion"
+        )
+        return tree
 
     monkeypatch.setattr(ET, "parse", counted_parse)
     monkeypatch.setattr(
@@ -564,8 +603,19 @@ def test_combined_report_parses_each_artifact_once(
             str(mutations),
         ],
     )
-    report_main()
+    if malformed_mutations:
+        with pytest.raises(ValueError, match="Invalid lifecycle mutation artifacts:") as error:
+            report_main()
+        assert "Malformed lifecycle mutation report" in str(error.value)
+        assert all(str(path) in str(error.value) for path in paths)
+        assert not mutations.exists()
+    else:
+        report_main()
     assert parsed_paths == paths
+    gc.collect()
+    assert sum(reference() is not None for reference in parsed_roots) <= 1, (
+        "Reporter retained prior JUnit roots after ingestion"
+    )
     report = json.loads(output.read_text(encoding="ascii"))
     expected = coverage_report(_ALL_ROWS, expected_executions, input_revision="test-fixture")
     assert {key: report[key] for key in expected} == json.loads(json.dumps(expected))
@@ -577,10 +627,11 @@ def test_combined_report_parses_each_artifact_once(
             ]
         )
     )
-    assert json.loads(mutations.read_text(encoding="ascii")) == {
-        **mutation_report(()),
-        "input_revision": "test-fixture",
-    }
+    if not malformed_mutations:
+        assert json.loads(mutations.read_text(encoding="ascii")) == {
+            **mutation_report(()),
+            "input_revision": "test-fixture",
+        }
 
 
 @pytest.mark.parametrize("invalid_index", (0, 1))

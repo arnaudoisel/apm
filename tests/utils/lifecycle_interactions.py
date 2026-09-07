@@ -379,6 +379,8 @@ def required_transitions(row: RoutingRow) -> frozenset[str]:
             transitions.add("prune")
     if row.integrity_state == "tampered":
         transitions.add("tamper")
+    if row.command == "update" and row.ref_state == "tag":
+        transitions.add("advance-tag")
     if known_gap_for(row) is not None:
         transitions.add("converge-known-gap")
     return frozenset(transitions - {"widen-narrow"})

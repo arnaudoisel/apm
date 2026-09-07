@@ -95,7 +95,7 @@ def main() -> None:
         raise ValueError("No lifecycle JUnit artifacts found")
     executions = []
     mutation_results = []
-    mutation_errors: list[tuple[Path, ValueError]] = []
+    mutation_errors: list[tuple[Path, str]] = []
     for path in paths:
         root = ET.parse(path).getroot()  # noqa: S314 - Local pytest-generated JUnit.
         executions.extend(read_executions_from_root(root, path=path))
@@ -103,7 +103,7 @@ def main() -> None:
             try:
                 mutation_results.extend(read_mutation_results_from_root(root, path=path))
             except ValueError as error:
-                mutation_errors.append((path, error))
+                mutation_errors.append((path, str(error)))
     report = coverage_report(
         (*ROUTING_ROWS, *INTERACTION_ROWS),
         executions,
@@ -130,9 +130,7 @@ def main() -> None:
     )
     if mutation_errors:
         details = "; ".join(f"{path}: {error}" for path, error in mutation_errors)
-        raise ValueError(f"Invalid lifecycle mutation artifacts: {details}") from mutation_errors[
-            0
-        ][1]
+        raise ValueError(f"Invalid lifecycle mutation artifacts: {details}")
     if arguments.mutation_output is not None:
         mutation_report = write_mutation_report(
             arguments.mutation_output,
