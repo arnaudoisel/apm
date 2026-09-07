@@ -48,7 +48,7 @@ SKILL_BYTES = (
 ).encode("ascii")
 TAMPER_BYTES = b"# user tamper\n"
 INSTALL_ARGS = ("install", "--no-policy", "--parallel-downloads", "0")
-AUDIT_ARGS = ("audit", "--ci", "--no-policy", "--format", "json")
+AUDIT_ARGS = ("audit", "--ci", "--no-policy", "--no-fail-fast", "--format", "json")
 SENTINELS = (
     ("project", ".github/workflows/unrelated.yml", b"name: unrelated\n"),
     ("project", ".agents/skills/user-skill/SKILL.md", b"# User-owned skill\n"),
@@ -215,11 +215,11 @@ def assert_ci_audit_result(
     deployment_root: Path | None = None,
     tampered_path: Path | None = None,
 ) -> None:
-    """Validate --ci outcomes; routing fixtures additionally require complete replay.
+    """Validate --ci outcomes; attributed consumers require complete replay.
 
-    The model's small command fake supplies only status and ``passed``. Real
-    interaction rows supply their authored deployment root and tampered leaf:
-    those rows cannot earn credit without completed, attributable verification.
+    Model and interaction drivers, including filesystem fakes, supply their
+    authored deployment root and tampered leaf. Neither driver may earn credit
+    through the unattributed status-only helper path.
     This is a test receipt check, not an implementation of bare-audit policy.
     """
     assert type(result.returncode) is int and result.returncode == (0 if clean else 1), (
@@ -336,7 +336,14 @@ def law_outcome(observation: TransitionObservation) -> None:
         return
     assert result is not None, "Missing command result"
     if observation.transition in {"audit_clean", "audit_tampered"}:
-        assert_ci_audit_result(result, clean=observation.transition == "audit_clean")
+        project_root = observation.before.artifacts.snapshot("project").root
+        clean = observation.transition == "audit_clean"
+        assert_ci_audit_result(
+            result,
+            clean=clean,
+            deployment_root=project_root,
+            tampered_path=None if clean else project_root / SKILL_PATH,
+        )
     else:
         assert result.returncode == 0
     if observation.transition == "dry_run":

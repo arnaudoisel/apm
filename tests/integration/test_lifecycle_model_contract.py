@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import shutil
 from dataclasses import FrozenInstanceError, replace
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.utils import lifecycle_model_driver
 from tests.utils.apm_lifecycle_runner import CommandResult
 from tests.utils.lifecycle_model import (
     CORPUS_PATH,
@@ -117,6 +119,46 @@ def _write(root: Path, path: str, content: bytes) -> None:
     destination.write_bytes(content)
 
 
+def _completed_audit_payload(clean: bool, path: str = SKILL_PATH) -> dict[str, object]:
+    """Author complete fake receipts; the shared validator alone adjudicates them."""
+    checks = [
+        {"name": name, "passed": True, "message": "ok", "details": []}
+        for name in (
+            "lockfile-exists",
+            "ref-consistency",
+            "deployment-ledger-owners",
+            "deployed-files-present",
+            "no-orphaned-packages",
+            "skill-subset-consistency",
+            "config-consistency",
+            "content-integrity",
+            "includes-consent",
+        )
+    ]
+    if not clean:
+        integrity = next(check for check in checks if check["name"] == "content-integrity")
+        integrity.update(
+            passed=False,
+            message="content hash mismatch",
+            details=[f"hash-drift: {path} (dep=fixture/model-kit)"],
+        )
+    checks.append(
+        {
+            "name": "drift",
+            "passed": clean,
+            "message": "no drift detected against lockfile" if clean else "1 drift finding",
+            "details": [] if clean else [f"modified: {path}"],
+        }
+    )
+    failed = 0 if clean else 2
+    return {
+        "passed": clean,
+        "checks": checks,
+        "summary": {"total": len(checks), "passed": len(checks) - failed, "failed": failed},
+        "drift": {"drift": [] if clean else [{"kind": "modified", "path": path}]},
+    }
+
+
 def _component_driver(root: Path, identity: str) -> tuple[LifecycleDriver, list[CommandResult]]:
     """An explicit filesystem fake validates the harness, not production behavior."""
     roots = {"project": root / "project", "user": root / "user"}
@@ -156,7 +198,7 @@ def _component_driver(root: Path, identity: str) -> tuple[LifecycleDriver, list[
         elif args[0] == "audit":
             clean = (project / SKILL_PATH).read_bytes() == SKILL_BYTES
             code = 0 if clean else 1
-            stdout = json.dumps({"passed": clean})
+            stdout = json.dumps(_completed_audit_payload(clean))
         elif args[0] == "prune":
             shutil.rmtree(project / CACHE_ROOT)
             shutil.rmtree(project / SOURCE_ROOT)
@@ -284,6 +326,217 @@ def test_literal_corpus_replay_records_only_fired_actions(tmp_path: Path, case: 
         transition not in {"tamper", "remove_declaration", "readd_declaration"}
         for transition in case.sequence
     )
+
+
+@pytest.mark.parametrize(
+    ("transition", "absolute_path"),
+    (("audit_clean", False), ("audit_tampered", False), ("audit_tampered", True)),
+    ids=("clean-completed", "tampered-relative", "tampered-absolute"),
+)
+def test_model_audit_accepts_completed_attributable_receipts(
+    tmp_path: Path, transition: str, absolute_path: bool
+) -> None:
+    """A completed audit earns credit using fixture roots, not the receipt's cwd."""
+    driver, results = _component_driver(tmp_path, "completed-audit")
+    driver.apply("install")
+    if transition == "audit_tampered":
+        driver.apply("tamper")
+    original = driver.run_command
+    clean = transition == "audit_clean"
+
+    def completed_run(args: tuple[str, ...], identity: str) -> CommandResult:
+        result = original(args, identity)
+        path = (driver.roots["project"] / SKILL_PATH).as_posix() if absolute_path else SKILL_PATH
+        return replace(
+            result,
+            stdout=json.dumps(_completed_audit_payload(clean, path)),
+            cwd=tmp_path / "untrusted-receipt-root",
+        )
+
+    driver.run_command = completed_run
+    before = observe(driver.roots)
+    driver.apply(transition)
+    assert observe(driver.roots) == before
+    assert results[-1].command == (
+        "fake-apm",
+        "audit",
+        "--ci",
+        "--no-policy",
+        "--no-fail-fast",
+        "--format",
+        "json",
+    )
+    evidence = driver.evidence()
+    assert evidence["status"] == "passed"
+    assert evidence["failure"] is None
+    audit_laws = [row for row in evidence["laws"] if row["step"] == len(driver.sequence)]
+    assert {row["law"] for row in audit_laws} == applicable_laws(driver.state, transition)
+    assert all(row["passed"] for row in audit_laws)
+    assert next(row for row in audit_laws if row["law"] == OUTCOME)["passed"] is True
+
+
+@pytest.mark.parametrize("transition", ("audit_clean", "audit_tampered"))
+@pytest.mark.parametrize(
+    ("corruption", "diagnostic"),
+    (
+        ("status-only", "missing completed checks"),
+        ("opposite-state", "exit="),
+        ("skipped-replay", "replay"),
+        ("incomplete-inventory", "incomplete verification"),
+        ("incomplete-replay", "missing completed replay findings"),
+        ("unrelated-check", "unrelated failed checks"),
+        ("unrelated-path", "unrelated or incomplete integrity finding"),
+    ),
+)
+def test_model_audit_rejects_unattributed_receipts(
+    tmp_path: Path, transition: str, corruption: str, diagnostic: str
+) -> None:
+    """Invalid receipts fail the actual driver outcome law before it earns credit."""
+    driver, _ = _component_driver(tmp_path, f"{transition}-{corruption}")
+    driver.apply("install")
+    if transition == "audit_tampered":
+        driver.apply("tamper")
+    # Every negative follows a completed positive through the same command boundary.
+    driver.apply(transition)
+    assert driver.evidence()["status"] == "passed"
+    original = driver.run_command
+    clean = transition == "audit_clean"
+
+    def invalid_run(args: tuple[str, ...], identity: str) -> CommandResult:
+        result = original(args, identity)
+        payload = json.loads(result.stdout)
+        checks = {check["name"]: check for check in payload["checks"]}
+        if corruption == "status-only":
+            payload = {"passed": clean}
+        elif corruption == "opposite-state":
+            payload = _completed_audit_payload(not clean)
+            result = replace(result, returncode=1 if clean else 0)
+        elif corruption == "skipped-replay":
+            checks["drift"].update(passed=True, message="drift check skipped", details=[])
+            payload["drift"] = {"drift": []}
+        elif corruption == "incomplete-inventory":
+            payload["checks"].remove(checks["includes-consent"])
+        elif corruption == "incomplete-replay":
+            del payload["drift"]
+        elif corruption == "unrelated-check":
+            payload = _completed_audit_payload(True)
+            payload["passed"] = clean
+            unrelated = next(
+                check for check in payload["checks"] if check["name"] == "ref-consistency"
+            )
+            unrelated.update(passed=False, message="unrelated ref failure")
+        elif clean:
+            # The clean counterpart must reject unexpected replay findings, too.
+            payload["drift"]["drift"] = [{"kind": "modified", "path": "unrelated.md"}]
+        else:
+            payload = _completed_audit_payload(False, "unrelated.md")
+        if "checks" in payload:
+            failed = sum(not check["passed"] for check in payload["checks"])
+            payload["summary"] = {
+                "total": len(payload["checks"]),
+                "passed": len(payload["checks"]) - failed,
+                "failed": failed,
+            }
+        return replace(result, stdout=json.dumps(payload))
+
+    driver.run_command = invalid_run
+    before = observe(driver.roots)
+    state = driver.state
+    expected_error = (
+        "clean receipt contains drift" if clean and corruption == "unrelated-path" else diagnostic
+    )
+    with pytest.raises(AssertionError, match=f"audit:.*{expected_error}") as failure:
+        driver.apply(transition)
+    assert observe(driver.roots) == before
+    assert driver.state == state
+    evidence = driver.evidence()
+    assert evidence["status"] == "failed"
+    assert evidence["failure"] == str(failure.value)
+    report = json.loads(evidence["failure"])
+    assert report["case_id"] == driver.case_id
+    assert report["law"] == OUTCOME
+    assert report["sequence"] == driver.sequence
+    receipt_clean = not clean if corruption == "opposite-state" else clean
+    assert report["returncode"] == (0 if receipt_clean else 1)
+    assert json.loads(report["stdout"])["passed"] is receipt_clean
+    if corruption == "opposite-state":
+        assert report["error"].startswith(f"audit: exit={report['returncode']}\n")
+        assert json.loads(report["stdout"]) == _completed_audit_payload(not clean)
+    assert expected_error in report["error"]
+    step = len(driver.sequence)
+    assert evidence["transitions"][-1] == {"step": step, "transition": transition}
+    assert [row for row in evidence["laws"] if row["step"] == step and row["law"] == OUTCOME] == [
+        {"step": step, "transition": transition, "law": OUTCOME, "passed": False}
+    ]
+
+
+def test_model_audit_consumer_supplies_authored_attribution_and_complete_inventory() -> None:
+    """Guard the real consumer arguments, not just the presence of a validator call."""
+    module = ast.parse(Path(lifecycle_model_driver.__file__).read_text(encoding="utf-8"))
+    outcome = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "law_outcome"
+    )
+    calls = [
+        node
+        for node in ast.walk(outcome)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "assert_ci_audit_result"
+    ]
+    assert len(calls) == 1, "Model audits must use the one canonical receipt validator"
+    call = calls[0]
+    assert [ast.dump(argument) for argument in call.args] == [
+        ast.dump(ast.parse("result", mode="eval").body)
+    ]
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    expected_keywords = {
+        "clean": "clean",
+        "deployment_root": "project_root",
+        "tampered_path": "None if clean else project_root / SKILL_PATH",
+    }
+    assert len(call.keywords) == len(expected_keywords)
+    assert set(keywords) == set(expected_keywords), "Missing strict audit consumer arguments"
+    for name, expression in expected_keywords.items():
+        assert ast.dump(keywords[name]) == ast.dump(ast.parse(expression, mode="eval").body), name
+    for name, expression in {
+        "project_root": 'observation.before.artifacts.snapshot("project").root',
+        "clean": 'observation.transition == "audit_clean"',
+    }.items():
+        assignments = [
+            node.value
+            for node in ast.walk(outcome)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
+        ]
+        assert len(assignments) == 1, f"Missing unique authored audit input: {name}"
+        assert ast.dump(assignments[0]) == ast.dump(ast.parse(expression, mode="eval").body), name
+    assignments = {
+        target.id: node.value
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert ast.literal_eval(assignments["AUDIT_ARGS"]) == (
+        "audit",
+        "--ci",
+        "--no-policy",
+        "--no-fail-fast",
+        "--format",
+        "json",
+    )
+    commands = assignments["_COMMANDS"]
+    assert isinstance(commands, ast.Dict)
+    for transition in ("audit_clean", "audit_tampered"):
+        arguments = [
+            value
+            for key, value in zip(commands.keys, commands.values, strict=True)
+            if isinstance(key, ast.Constant) and key.value == transition
+        ]
+        assert len(arguments) == 1
+        assert isinstance(arguments[0], ast.Name) and arguments[0].id == "AUDIT_ARGS"
 
 
 @pytest.mark.parametrize("law", sorted(LAWS))
