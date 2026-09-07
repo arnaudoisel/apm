@@ -2,6 +2,7 @@
 
 import importlib
 import sys
+from types import ModuleType
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -400,12 +401,14 @@ class TestShowDownloadSpinner:
 # ---------------------------------------------------------------------------
 
 
-def _reimport_console_without(blocked_modules: list[str]):
+def _reimport_console_without(blocked_modules: list[str]) -> ModuleType:
     """Re-import apm_cli.utils.console with ``blocked_modules`` blocked.
 
-    Returns the freshly imported module, then restores everything in
-    sys.modules so other tests are unaffected.
+    Restore both sys.modules and the parent-package attribute so other
+    tests cannot import the fallback module through a different spelling.
     """
+    original = importlib.import_module("apm_cli.utils.console")
+    parent = importlib.import_module("apm_cli.utils")
     # Save and remove existing entries we will touch.
     saved: dict[str, object] = {}
     for key in list(sys.modules.keys()):
@@ -433,6 +436,7 @@ def _reimport_console_without(blocked_modules: list[str]):
                 del sys.modules[key]
         # Restore originals.
         sys.modules.update(saved)
+        parent.console = original
 
 
 class TestImportFallbacks:
@@ -453,6 +457,21 @@ class TestImportFallbacks:
         assert fresh.COLORAMA_AVAILABLE is False
         assert fresh.Fore is None
         assert fresh.Style is None
+
+    @pytest.mark.parametrize("blocked_module", ["rich", "colorama"])
+    def test_fallback_probe_restores_both_import_paths(self, blocked_module: str) -> None:
+        """A fallback probe must not strand a fake module on its parent package."""
+        original = importlib.import_module("apm_cli.utils.console")
+
+        fresh = _reimport_console_without([blocked_module])
+
+        import apm_cli.utils.console as qualified
+        from apm_cli.utils import console as from_parent
+
+        assert fresh is not original
+        assert sys.modules["apm_cli.utils.console"] is original
+        assert qualified is original
+        assert from_parent is original
 
 
 class TestGetConsoleDoubleCheckLock:

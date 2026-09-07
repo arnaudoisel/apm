@@ -237,6 +237,8 @@ exercise the paths used by the sharded suite.
 When a fixture monkeypatches a temporary config path, reset the config cache at
 setup and again in `finally`. Path monkeypatching alone does not invalidate
 cached config in shard-exposed fixtures.
+Import-fallback fixtures must also restore parent-package attributes, not just
+`sys.modules`, so import spellings see the same module after teardown.
 
 It is also not an OS/native-code sandbox: executables found through `PATH`
 remain trusted, reflective access to CPython internals or native extensions can
