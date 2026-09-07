@@ -48,7 +48,11 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmark-arm-candidate-${{ github.run_attempt }}
-          path: release-assets/
+          # Sibling paths preserve release-assets/ instead of flattening it.
+          path: |
+            release-assets/
+            scripts/package_release.py
+            scripts/release-platforms.json
           compression-level: 0
           if-no-files-found: error
           retention-days: 30

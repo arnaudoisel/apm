@@ -43,7 +43,8 @@ def _assert_probe(workflow: dict) -> None:
     ]
     assert any(
         upload["name"] == "benchmark-arm-candidate-${{ github.run_attempt }}"
-        and upload["path"] == "release-assets/"
+        and set(upload["path"].splitlines())
+        == {"release-assets/", "scripts/package_release.py", "scripts/release-platforms.json"}
         and upload["compression-level"] == 0
         for upload in uploads
     )
@@ -118,7 +119,16 @@ def test_release_routes_the_same_arm_scheduler_as_the_probe() -> None:
 
 @pytest.mark.parametrize(
     "fault",
-    ["candidate", "snapshot", "source", "selection", "workers", "missing-shard", "fail-fast"],
+    [
+        "candidate",
+        "snapshot",
+        "source",
+        "selection",
+        "workers",
+        "missing-shard",
+        "fail-fast",
+        "flattened-archive",
+    ],
 )
 def test_native_probe_rejects_incomparable_or_incomplete_designs(fault: str) -> None:
     workflow = deepcopy(load_workflow(WORKFLOW))
@@ -135,8 +145,15 @@ def test_native_probe_rejects_incomparable_or_incomplete_designs(fault: str) -> 
         job["with"]["xdist-workers"] = "auto"
     elif fault == "missing-shard":
         job["strategy"]["matrix"]["include"].pop()
-    else:
+    elif fault == "fail-fast":
         job["strategy"]["fail-fast"] = True
+    else:
+        uploads = [
+            step
+            for step in workflow["jobs"]["candidate"]["steps"]
+            if "upload-artifact@" in step.get("uses", "")
+        ]
+        uploads[0]["with"]["path"] = "release-assets/"
     with pytest.raises(AssertionError):
         _assert_probe(workflow)
 
