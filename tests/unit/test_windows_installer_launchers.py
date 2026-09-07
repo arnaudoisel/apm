@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -39,6 +42,28 @@ def test_windows_installer_e2e_covers_bare_subprocess_resolution() -> None:
     assert "command -v apm && apm --version" in test_script
     assert "cmd.exe /d /c" in test_script
     assert "Stable executable directory precedes command shim directory in user PATH" in test_script
+
+
+@pytest.mark.windows_compat
+def test_installer_harness_does_not_add_the_test_name_to_native_dll_paths() -> None:
+    """Reserve loader path space without removing the PowerShell quoting scenarios."""
+    source = (ROOT / "tests/integration/test_windows_installer_launchers.py").read_text("utf-8")
+    tree = ast.parse(source)
+    create = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "IsolatedApmEnvironment"
+        and node.func.attr == "create"
+    )
+    root = create.args[0]
+    assert isinstance(root, ast.Call) and isinstance(root.func, ast.Attribute)
+    assert isinstance(root.func.value, ast.Name) and root.func.value.id == "tmp_path_factory"
+    assert root.func.attr == "mktemp" and ast.literal_eval(root.args[0]) == "wi"
+    test_script = (ROOT / "scripts/windows/test-install-script.ps1").read_text("utf-8")
+    assert "APM Install Test & Edge" in test_script
 
 
 def test_windows_installer_e2e_covers_missing_stable_executable_negative_twin() -> None:

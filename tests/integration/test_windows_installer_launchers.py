@@ -31,11 +31,14 @@ pytestmark = [
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_windows_installer_exposes_stable_executable(tmp_path: Path) -> None:
+def test_windows_installer_exposes_stable_executable(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
     """Install APM and launch bare ``apm`` through Windows process boundaries."""
     candidate = InstallerArchive.from_environment(os.environ, "CANDIDATE")
     baseline = InstallerArchive.from_environment(os.environ, "BASELINE")
-    isolated = IsolatedApmEnvironment.create(tmp_path / "installer", base_env=os.environ)
+    # Keep the harness prefix short; the PowerShell fixture still adds spaces and "&".
+    isolated = IsolatedApmEnvironment.create(tmp_path_factory.mktemp("wi"), base_env=os.environ)
     environment = isolated.subprocess_env()
     environment["APPDATA"] = str(isolated.home)
     with (

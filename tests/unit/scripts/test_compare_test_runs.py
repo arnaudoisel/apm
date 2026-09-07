@@ -290,3 +290,205 @@ def test_real_pytest_xdist_reports_preserve_original_node_ids_and_outcomes(tmp_p
     assert proof["scenario_count"] == 4
     assert proof["outcomes"]["passed"] == 2
     assert ("pytest-nodeid", "test_example.py::test_case[literal@home]") in baseline.cases
+
+
+def _write_subtest_probe(tmp_path: Path) -> None:
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\nmarkers = xdist_group: scheduling affinity\n", encoding="ascii"
+    )
+    (tmp_path / "test_subtest_probe.py").write_text(
+        "import os\n"
+        "import pytest\n"
+        "import unittest\n"
+        "class TestSubtests(unittest.TestCase):\n"
+        "    @pytest.mark.xdist_group('home')\n"
+        "    def test_repeated_context(self):\n"
+        "        for ordinal, label in enumerate(['same', 'same', 'literal@context'], 1):\n"
+        "            with self.subTest(label=label):\n"
+        "                if os.environ.get('FAIL_SECOND_SUBTEST') == '1' and ordinal == 2:\n"
+        "                    self.fail('intentional subtest proof failure')\n"
+        "                self.assertTrue(label)\n"
+        "@pytest.mark.xdist_group('home')\n"
+        "@pytest.mark.parametrize('value', ['literal@home', 'plain'])\n"
+        "def test_literal_at_param(value):\n"
+        "    if os.environ.get('SKIP_PLAIN_PARAM') == '1' and value == 'plain':\n"
+        "        pytest.skip('intentional parity regression')\n"
+        "    assert value in {'literal@home', 'plain'}\n",
+        encoding="ascii",
+    )
+
+
+def _run_subtest_probe(
+    tmp_path: Path,
+    name: str,
+    variant: str,
+    shard: int,
+    shard_count: int,
+    workers: str,
+    dist: str = "worksteal",
+    *,
+    fail_second_subtest: bool = False,
+    skip_plain_param: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], Report]:
+    root = Path(__file__).resolve().parents[3]
+    (tmp_path / ".test_durations").write_text("{}\n", encoding="ascii")
+    junit = tmp_path / f"{name}.xml"
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "scripts.pytest_performance_evidence",
+        "test_subtest_probe.py",
+        "-n",
+        workers,
+        "--dist",
+        dist,
+        "--durations=5",
+        "--store-durations",
+        f"--junitxml={junit}",
+    ]
+    if shard_count > 1:
+        command.extend(
+            [
+                "--splits",
+                str(shard_count),
+                "--group",
+                str(shard),
+                "--splitting-algorithm",
+                "least_duration",
+            ]
+        )
+    result = subprocess.run(
+        command,
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(root),
+            "FAIL_SECOND_SUBTEST": "1" if fail_second_subtest else "",
+            "SKIP_PLAIN_PARAM": "1" if skip_plain_param else "",
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return result, capture(junit, SHA, "subtest probe", variant, shard, shard_count)
+
+
+def test_real_pytest_subtests_compare_under_xdist_baseline_and_two_shards(
+    tmp_path: Path,
+) -> None:
+    _write_subtest_probe(tmp_path)
+    result, baseline = _run_subtest_probe(tmp_path, "baseline", "baseline", 1, 1, "auto")
+    assert result.returncode == 0, result.stdout + result.stderr
+    proposed = []
+    for shard in (1, 2):
+        result, report = _run_subtest_probe(
+            tmp_path, f"proposed-{shard}", "proposed", shard, 2, "4"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        proposed.append(report)
+
+    proof = compare(
+        [replace(baseline, elapsed_seconds=10.0)],
+        [replace(report, elapsed_seconds=5.0) for report in proposed],
+        SHA,
+        0.05,
+    )
+    assert proof["scenario_count"] == 6
+    assert proof["outcomes"] == {
+        "passed": 6,
+        "skipped": 0,
+        "xfailed": 0,
+        "failed": 0,
+        "error": 0,
+    }
+    assert (
+        "pytest-nodeid",
+        "test_subtest_probe.py::test_literal_at_param[literal@home]",
+    ) in baseline.cases
+    for ordinal in (1, 2, 3):
+        assert (
+            "test_subtest_probe.TestSubtests.test_repeated_context",
+            f"subTest[{ordinal}]",
+        ) in baseline.cases
+
+
+def test_real_pytest_subtests_compare_between_serial_and_loadgroup_shards(
+    tmp_path: Path,
+) -> None:
+    _write_subtest_probe(tmp_path)
+    result, baseline = _run_subtest_probe(
+        tmp_path, "baseline-loadgroup", "baseline", 1, 1, "0", "loadgroup"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    proposed = []
+    for shard in (1, 2):
+        result, report = _run_subtest_probe(
+            tmp_path, f"proposed-loadgroup-{shard}", "proposed", shard, 2, "2", "loadgroup"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        proposed.append(report)
+
+    proof = compare(
+        [replace(baseline, elapsed_seconds=10.0)],
+        [replace(report, elapsed_seconds=5.0) for report in proposed],
+        SHA,
+        0.05,
+    )
+    assert proof["scenario_count"] == 6
+    assert (
+        "pytest-nodeid",
+        "test_subtest_probe.py::test_literal_at_param[literal@home]",
+    ) in baseline.cases
+    assert (
+        "pytest-nodeid",
+        "test_subtest_probe.py::test_literal_at_param[literal@home]",
+    ) in proposed[0].cases | proposed[1].cases
+    for report in proposed:
+        assert not any("@home::subTest" in part for case in report.cases for part in case)
+
+
+def test_real_pytest_subtest_failure_remains_a_compare_rejection(tmp_path: Path) -> None:
+    _write_subtest_probe(tmp_path)
+    result, baseline = _run_subtest_probe(tmp_path, "baseline", "baseline", 1, 1, "auto")
+    assert result.returncode == 0, result.stdout + result.stderr
+    proposed = []
+    for shard in (1, 2):
+        result, report = _run_subtest_probe(
+            tmp_path,
+            f"proposed-fail-{shard}",
+            "proposed",
+            shard,
+            2,
+            "4",
+            fail_second_subtest=True,
+        )
+        proposed.append(report)
+    assert any("failed" in report.cases.values() for report in proposed)
+    with pytest.raises(ValueError, match="contains failing tests"):
+        compare([baseline], proposed, SHA, 0.05)
+
+
+def test_real_pytest_subtest_probe_rejects_new_skips(tmp_path: Path) -> None:
+    _write_subtest_probe(tmp_path)
+    result, baseline = _run_subtest_probe(tmp_path, "baseline", "baseline", 1, 1, "auto")
+    assert result.returncode == 0, result.stdout + result.stderr
+    proposed = []
+    for shard in (1, 2):
+        result, report = _run_subtest_probe(
+            tmp_path,
+            f"proposed-skip-{shard}",
+            "proposed",
+            shard,
+            2,
+            "4",
+            skip_plain_param=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        proposed.append(report)
+    assert any("skipped" in report.cases.values() for report in proposed)
+    with pytest.raises(ValueError, match="Scenario parity failed"):
+        compare([baseline], proposed, SHA, 0.05)

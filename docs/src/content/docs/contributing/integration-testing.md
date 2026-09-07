@@ -577,6 +577,9 @@ fingerprints before accepting a measured execution improvement of at least
 5%. New skips, missing tests, failures, or different environments fail the
 comparison. JUnit controller elapsed time is reported separately from summed
 runner time; neither includes runner allocation or setup.
+The opt-in evidence plugin emits `unittest.subTest` outcomes as distinct
+parent-relative ordinal cases, so JUnit summary counts must still exactly
+match the concrete inventory; subtests are not discarded to make counts fit.
 
 Download `arm-performance-comparison-<attempt>` or
 `windows-compat-performance-comparison-<attempt>` for the JSON verdict, and
@@ -604,6 +607,12 @@ all three matching cohort members before pytest. Missing, stale, or mismatched p
 expensive tests. Integration pairs use exact archive bytes from the same build;
 source-unit pairs use the identical SHA; final comparison still requires exact
 original case/outcome parity.
+
+Windows public release validation accepts `GITHUB_API_TOKEN` without mapping
+the read-only job token to PAT/Models variables. Private-module and inference
+validation still need their existing credentials. The native installer fixture
+uses a short temporary root while retaining spaces and `&` in its install
+prefix, leaving room for staged bundle DLL paths.
 
 The comparison retains all five production
 `Integration Tests` fan-ins and `Native Candidate Gate` jobs, measures each

@@ -106,11 +106,28 @@ function Find-Binary {
 function Test-Prerequisite {
     Write-TestHeader "Prerequisites: GitHub token"
 
+    $hasReleaseApiToken = [bool]$env:GITHUB_API_TOKEN
+    $inferenceTestsEnabled = $env:APM_RUN_INFERENCE_TESTS -eq "1"
+
     Initialize-GitHubToken
-    # Initialize-GitHubToken doesn't return failure — check tokens after setup
-    if ($env:GITHUB_TOKEN -or $env:GITHUB_APM_PAT) {
+
+    # Initialize-GitHubToken does not return failure; check tokens after setup.
+    # GITHUB_API_TOKEN is the workflow's read-only GitHub API token for public
+    # release validation. It is not a PAT/Models credential, so do not copy it
+    # into GITHUB_TOKEN, GITHUB_APM_PAT, or GITHUB_MODELS_KEY.
+    $hasPatOrModelsToken = [bool]($env:GITHUB_TOKEN -or $env:GITHUB_APM_PAT)
+
+    if ($inferenceTestsEnabled -and -not $hasPatOrModelsToken) {
+        Write-ErrorText "Inference tests require GITHUB_TOKEN or GITHUB_APM_PAT; GITHUB_API_TOKEN only covers public release API access"
+        return $false
+    }
+
+    if ($hasPatOrModelsToken -or $hasReleaseApiToken) {
         Write-Success "GitHub tokens configured successfully"
 
+        if ($hasReleaseApiToken) {
+            Write-Success "GITHUB_API_TOKEN is set (public release API access)"
+        }
         if ($env:GITHUB_APM_PAT) {
             Write-Success "GITHUB_APM_PAT is set (APM module access)"
         }
@@ -119,7 +136,7 @@ function Test-Prerequisite {
         }
         return $true
     } else {
-        Write-ErrorText "GitHub token setup failed"
+        Write-ErrorText "GitHub token setup failed; set GITHUB_API_TOKEN for public release validation or GITHUB_TOKEN/GITHUB_APM_PAT for inference/private module validation"
         return $false
     }
 }
