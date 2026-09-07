@@ -39,6 +39,66 @@ _GUARD_TARGET_CONTRACTION = "install-deployment-target-file-contraction"
 
 _GUARD_BASE_INTEGRATOR = "install-deployment-base-integrator"
 
+_GUARD_COPILOT_AGGREGATE = "install-deployment-copilot-aggregate"
+
+
+def check_copilot_aggregate(provider: FactsProvider) -> tuple[Violation, ...]:
+    """Keep aggregate lifecycle wiring at its integration and provenance owners."""
+    routes = (
+        (
+            "src/apm_cli/install/phases/lockfile.py",
+            "_attach_deployed_files",
+            {"aggregate_paths", "reconcile_package_claims", "merge_aggregate_records"},
+        ),
+        (
+            "src/apm_cli/commands/uninstall/engine.py",
+            "_sync_integrations_after_uninstall",
+            {
+                "aggregate_paths",
+                "cleanup_snapshot",
+                "integrate_local_content",
+                "integrate_package_primitives",
+                "finalize_install_result",
+            },
+        ),
+        (
+            "src/apm_cli/integration/instruction_integrator.py",
+            "sync_for_target",
+            {"aggregate_paths", "remove_stale_deployed_files"},
+        ),
+        (
+            "src/apm_cli/models/apm_package.py",
+            "build_installed_package_info",
+            {"to_github_url"},
+        ),
+    )
+    findings = []
+    for path, function, required in routes:
+        facts, errors = _facts_for(provider, path, _GUARD_COPILOT_AGGREGATE)
+        findings.extend(errors)
+        if errors:
+            continue
+        definitions = [
+            definition for definition in facts.definitions if definition.name == function
+        ]
+        calls = {
+            call.qualname.rsplit(".", 1)[-1]
+            for call in facts.calls
+            if any(
+                definition.line <= call.line <= definition.end_line for definition in definitions
+            )
+        }
+        missing = required - calls
+        if missing:
+            findings.append(
+                _summary(
+                    _GUARD_COPILOT_AGGREGATE,
+                    path,
+                    f"{function} must route aggregate decisions through: {', '.join(sorted(missing))}",
+                )
+            )
+    return tuple(findings)
+
 
 def _body_has_re(body: Sequence[str], pattern: re.Pattern[str]) -> bool:
     """Return whether any captured body line matches `pattern`."""

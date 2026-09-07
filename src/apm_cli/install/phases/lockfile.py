@@ -232,12 +232,22 @@ class LockfileBuilder:
                 previous.deployed_file_hashes if previous is not None else {}
             )
         from apm_cli.core.deployment_state import DeploymentReconciler
+        from apm_cli.integration.instruction_integrator import InstructionIntegrator
 
+        shared_paths = InstructionIntegrator.aggregate_paths(self.ctx.targets)
+        current_claims = dict(self.ctx.package_deployed_files)
+        local_aggregates = shared_paths.intersection(getattr(self.ctx, "local_deployed_files", ()))
+        if local_aggregates:
+            current_claims["."] = sorted(local_aggregates)
+        package_keys = list(lockfile.dependencies)
+        if local_aggregates and "." not in package_keys:
+            package_keys.append(".")
         package_claims = DeploymentReconciler.reconcile_package_claims(
-            package_keys=lockfile.dependencies,
-            current_claims=self.ctx.package_deployed_files,
+            package_keys=package_keys,
+            current_claims=current_claims,
             prior_files=prior_files_by_package,
             prior_hashes=prior_hashes_by_package,
+            shared_paths=shared_paths,
         )
         declared = declared_target_profiles(self.ctx)
         diagnostics = getattr(self.ctx, "diagnostics", None)
@@ -257,7 +267,7 @@ class LockfileBuilder:
         lockfile_only = getattr(self.ctx, "lockfile_only", False)
         canonical_records = {}
         ghost_count = 0
-        for dep_key in lockfile.dependencies:
+        for dep_key in package_keys:
             claim = package_claims[dep_key]
             current = list(claim.current_files)
             retained_hashes = cleanup_retained.get(dep_key, {})
@@ -302,7 +312,9 @@ class LockfileBuilder:
                 # leave deployed_files untouched so the whole-dep
                 # _merge_existing path can preserve it intact.
                 continue
-            canonical_records.update(ledger.records)
+            canonical_records = DeploymentReconciler.merge_aggregate_records(
+                canonical_records, ledger.records, shared_paths
+            )
             from apm_cli.core.deployment_ledger import DeploymentLedgerCodec
 
             DeploymentLedgerCodec.apply_to_lockfile(

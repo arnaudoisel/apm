@@ -867,6 +867,11 @@ def build_installed_package_info(
     if not package:
         return None
 
+    if dep_ref.source in (None, "git"):
+        # Validation reconstructs authored metadata, not acquisition provenance.
+        # Reuse the identified Git source when rebuilding deployed sections.
+        package.source = dep_ref.to_github_url()
+
     return PackageInfo(
         package=package,
         install_path=install_path,

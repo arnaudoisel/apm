@@ -115,6 +115,8 @@ class DeploymentLedgerCodec:
             if owner in selected
             for path in dependency.deployed_files
         }
+        if "." in selected:
+            paths.update(lockfile.local_deployed_files)
         hashes: dict[str, str] = {}
         for record in DeploymentLedgerCodec.from_lockfile(lockfile).records.values():
             if (
@@ -127,6 +129,9 @@ class DeploymentLedgerCodec:
             if owner not in selected:
                 continue
             for path, content_hash in dependency.deployed_file_hashes.items():
+                hashes.setdefault(path, content_hash)
+        if "." in selected:
+            for path, content_hash in lockfile.local_deployed_file_hashes.items():
                 hashes.setdefault(path, content_hash)
         return DeploymentCleanupSnapshot(paths=frozenset(paths), hashes=hashes)
 
