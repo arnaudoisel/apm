@@ -76,14 +76,6 @@ class MutationCase:
 
 MUTATIONS: tuple[MutationCase, ...] = (
     MutationCase(
-        guard_id="install-deployment-copilot-aggregate",
-        rule_id="install-deployment-copilot-aggregate",
-        path="src/apm_cli/install/phases/lockfile.py",
-        old="DeploymentReconciler.merge_aggregate_records(",
-        new="parallel_aggregate_merge(",
-        intent="Aggregate ledger accumulation bypasses the canonical ownership reconciler.",
-    ),
-    MutationCase(
         guard_id="contracts-tests-taxonomy-classification",
         rule_id="contracts-tests-taxonomy-classification",
         path="tests/quality/taxonomy_inventory_plugin.py",
@@ -300,6 +292,14 @@ MUTATIONS: tuple[MutationCase, ...] = (
         old="if mapping is not None:",
         new='if target.name == "copilot" and mapping is not None:',
         intent="Local bundle routing branches on target names instead of target primitives.",
+    ),
+    MutationCase(
+        guard_id="install-deployment-copilot-aggregate",
+        rule_id="install-deployment-copilot-aggregate",
+        path="src/apm_cli/install/phases/lockfile.py",
+        old="DeploymentReconciler.merge_aggregate_records(",
+        new="parallel_aggregate_merge(",
+        intent="Aggregate ledger accumulation bypasses the canonical ownership reconciler.",
     ),
     MutationCase(
         guard_id="install-deployment-executable-trust-context",
