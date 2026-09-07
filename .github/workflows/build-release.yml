@@ -68,6 +68,9 @@ jobs:
       platform: ${{ matrix.platform }}
       binary-name: ${{ matrix.binary_name }}
       integration-markers: ${{ matrix.integration_markers }}
+      integration-shard-count: ${{ matrix.integration_shard_count }}
+      integration-xdist-workers: ${{ matrix.integration_xdist_workers }}
+      integration-splitting-algorithm: ${{ matrix.integration_splitting_algorithm }}
       full-validation: ${{ needs.plan.outputs.full_validation == 'true' }}
     secrets:
       GH_CLI_PAT: ${{ secrets.GH_CLI_PAT }}
@@ -174,10 +177,40 @@ jobs:
             });
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: verified-release-assets
+          name: verified-release-assets-${{ github.run_attempt }}
           path: release-assets/
+          compression-level: 0
           if-no-files-found: error
           retention-days: 7
+
+  build-docs-artifact:
+    name: Build Docs Artifact
+    needs: [plan]
+    if: >-
+      always() && !cancelled() && needs.plan.result == 'success' &&
+      github.event_name == 'push' && github.ref_type == 'tag' &&
+      needs.plan.outputs.is_prerelease != 'true'
+    uses: ./.github/workflows/docs-build.yml
+    permissions:
+      contents: read
+    with:
+      pages_artifact_name: docs-pages-${{ github.run_attempt }}
+      upload_pages_artifact: true
+
+  build-pypi-distributions:
+    name: Build PyPI Distributions
+    needs: [plan]
+    if: >-
+      always() && !cancelled() && needs.plan.result == 'success' &&
+      github.event_name == 'push' && github.ref_type == 'tag' &&
+      github.event.repository.private != true &&
+      needs.plan.outputs.is_prerelease != 'true'
+    uses: ./.github/workflows/pypi-distributions.yml
+    permissions:
+      contents: read
+    with:
+      artifact_name: pypi-distributions-${{ github.run_attempt }}
+      upload_artifact: true
 
   create-release:
     name: Create GitHub Release
@@ -196,7 +229,7 @@ jobs:
       - name: Download verified release archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: verified-release-assets
+          name: verified-release-assets-${{ github.run_attempt }}
           path: release-assets
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
@@ -238,18 +271,25 @@ jobs:
 
   deploy-docs:
     name: Deploy Docs
-    needs: [create-release]
+    needs: [create-release, build-docs-artifact]
     if: >-
       always() && !cancelled() && needs.create-release.result == 'success' &&
+      needs.build-docs-artifact.result == 'success' &&
       github.event_name == 'push' && github.ref_type == 'tag' &&
       needs.create-release.outputs.is_prerelease != 'true'
-    uses: ./.github/workflows/docs.yml
+    runs-on: ubuntu-24.04
     permissions:
-      contents: read
       pages: write
       id-token: write
-    with:
-      is_prerelease: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        with:
+          artifact_name: docs-pages-${{ github.run_attempt }}
 
   gh-aw-compat:
     name: GH-AW Compatibility
@@ -280,40 +320,16 @@ jobs:
         if: failure()
         run: echo "::warning::GH-AW compatibility failed; investigate the external dependency before the next release."
 
-  build-pypi-distributions:
-    name: Build PyPI Distributions
-    runs-on: ubuntu-24.04
-    needs: [create-release]
-    if: >-
-      always() && !cancelled() && needs.create-release.result == 'success' &&
-      github.event_name == 'push' && github.ref_type == 'tag' &&
-      needs.create-release.outputs.is_private_repo != 'true' &&
-      needs.create-release.outputs.is_prerelease != 'true'
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-      - name: Install locked build dependencies
-        run: uv sync --frozen --extra dev
-      - name: Build Python package
-        run: uv build --no-build-isolation --no-sources
-      - name: Upload Python distributions
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: pypi-distributions
-          path: |
-            dist/*.whl
-            dist/*.tar.gz
-          if-no-files-found: error
-
   publish-pypi:
     name: Publish to PyPI
     runs-on: ubuntu-24.04
-    needs: [build-pypi-distributions]
-    if: always() && !cancelled() && needs.build-pypi-distributions.result == 'success'
+    needs: [create-release, build-pypi-distributions]
+    if: >-
+      always() && !cancelled() && needs.create-release.result == 'success' &&
+      needs.build-pypi-distributions.result == 'success' &&
+      github.event_name == 'push' && github.ref_type == 'tag' &&
+      needs.create-release.outputs.is_private_repo != 'true' &&
+      needs.create-release.outputs.is_prerelease != 'true'
     environment:
       name: pypi
       url: https://pypi.org/p/apm-cli
@@ -324,7 +340,7 @@ jobs:
       - name: Download Python distributions
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: pypi-distributions
+          name: pypi-distributions-${{ github.run_attempt }}
           path: dist
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1

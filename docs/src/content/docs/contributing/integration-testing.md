@@ -40,7 +40,7 @@ to the required runtimes.
 - **Duration**: the required expression must remain inside its hard 6-minute job timeout; hosted duration is authoritative.
 - **Trigger**: every pull request and merge queue run (`ci.yml`'s `lifecycle-smoke` job, required via `merge-gate.yml`)
 - **Selection mechanism**: `pytest --strict-markers -m 'lifecycle_smoke and not lifecycle_merge_group' tests/integration` -- declarative, not a file/node-id list. No central count or membership list is maintained.
-- **Full-coverage path**: merge-group workflow `ci-integration.yml`, job `integration-tests-shard`, step `Run integration tests (sharded + parallelized)`, calls `uv run ./scripts/test-integration.sh`; that script runs unfiltered `pytest tests/integration/`, so the complete lifecycle family remains exercised.
+- **Full-coverage path**: merge-group workflow `ci-integration.yml` calls the shared `release-integration.yml` shard runner. Its Unix step invokes `scripts/test-integration.sh` over `tests/integration/`, so the complete lifecycle family remains exercised.
 - **Drift guard**: `tests/quality/test_ci_topology.py` independently collects the full, merge-group-only, and required selections; verifies their set partition; and preserves the required expression, full-integration execution path, step-level `APM_E2E_TESTS: "1"` binding, network/credential prohibitions, and required-check membership.
 - **Fixture controls**: lifecycle helpers set `APM_TEST_LOOPBACK_PORTS` for a port-scoped local registry and `APM_TEST_FAIL_LOCK_REPLACE=1` for atomic-write fault injection. These are internal test controls, not user-facing APM settings.
 - **Learning ledger**: `tests/fixtures/lifecycle_bug_ledger.json` maps representative escaped defects to generalized laws, oracle tiers, phases, and executable regression node IDs, including coverage of already-correct behavior. Use same-workspace transitions to prove survivor ownership and scoped cleanup. It is not a bug-count census; `tests/quality/test_lifecycle_bug_ledger.py` validates its taxonomy and links.
@@ -346,8 +346,11 @@ per-test gating lives in the marker registry described above.
 `APM_TEST_RUNTIMES` controls which external runtimes the orchestrator installs:
 
 - unset locally: install `copilot codex llm`
-- `copilot`: install only Copilot CLI for full non-live release qualification
-- `none`: install no external runtime for focused lifecycle selections
+- `copilot`: install only Copilot CLI when explicitly needed for local reproduction
+- `none`: install no external runtime up front; native and merge-queue CI use this selection
+
+Config-rendering cases do not require Copilot itself. Tests whose purpose is
+runtime installation still execute their own setup in isolated environments.
 
 Release promotion sets `PYTEST_MARK_EXPR` instead of editing test lists. Full
 non-live qualification uses `not live`; the focused macOS Intel lifecycle lane
@@ -381,6 +384,9 @@ At PR time the gate requires lint, test architecture ratchets, Linux unit
 shards, Windows compatibility, APM self-check, NOTICE drift, and Lifecycle
 Smoke. In merge queue context it also requires the Linux build, core smoke,
 full integration, release validation, and the coverage combine gate.
+The Windows compatibility selection uses two workers with `--dist loadgroup`.
+Merge-queue smoke, integration shards, and isolated validation can start after
+the build independently; all remain required at the final gate.
 
 ### Release qualification
 
@@ -396,6 +402,16 @@ full integration, release validation, and the coverage combine gate.
    installer job depend only on that platform's build artifact.
 5. Promote only the exact archives that were packaged once, verified, unpacked,
    and tested.
+
+Unix integration uses the shared `release-integration.yml` runner. macOS ARM
+uses two outer shards with two workers each; other native Unix lanes use one
+shard with four workers. ARM uses `least_duration` assignment, preserving
+relative order within each shard. Every shard must succeed.
+
+For stable tags, read-only docs and wheel builds also start after release
+planning. Their publishers wait for successful GitHub Release creation and
+their own build artifacts. Prebuilding does not grant publishing permissions
+or make failed qualification deployable.
 
 The publication path never repacks candidate archives. `scripts/package_release.py`
 packages each native archive once, records archive and executable SHA-256
@@ -480,7 +496,7 @@ with the executable member inside the candidate ZIP.
 
 ### Windows unit hang diagnostics
 
-The Windows full-unit step in `.github/workflows/build-release.yml` runs:
+The Windows full-unit step in `.github/workflows/release-platform.yml` runs:
 
 ```sh
 uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal -vv --tb=short --show-capture=no --no-showlocals
@@ -513,6 +529,7 @@ Runtime setup prefers `GITHUB_TOKEN` for GitHub Models and falls back to `GITHUB
 - Policy pinned-constraint enforcement (Govern contract)
 - The virtual/manifestless lifecycle matrix: install, lock, frozen-install, update, and audit stay consistent (the direct #2240 regression)
 - The ADO lock-coordinate single-owner guard (the direct #2226 regression)
+- Architecture registry coverage: every registered guard has exactly one mutation case. Only the cheap completeness assertion runs in PR smoke; the full mutation matrix remains in integration qualification.
 - Prune's merged-hook and ownership-sidecar reconciliation for the `claude` target (the direct #2249 regression -- an orphaned package's merged hook entries and sidecar markers must be cleaned up, not left pointing at deleted scripts)
 - No network, no credentials, no built binary required for any of the above
 
@@ -529,16 +546,42 @@ They do not restore a rolling cache or present the shards as timing-balanced:
 the shared planner job required for that can cost more runner allocation time
 than it saves in balancing.
 
-Native full-suite release lanes may restore timing history through
-`.github/actions/pytest-timing`, keyed by OS, architecture, suite, commit SHA,
-and partition. It remains a hint only: no test-result cache, test selection, or
-allowlist. Grouped tests still use `--dist loadgroup` so HOME-mutating fixtures
-stay on one worker.
+Native builds also freeze any available timing history through
+`.github/actions/pytest-timing`; all shards consume that one immutable
+snapshot. Measured shard histories are retained as artifacts, not independently
+restored or written back by each shard. Hints never replace test execution or
+act as an allowlist. Grouped tests still use `--dist loadgroup` so
+HOME-mutating fixtures stay on one worker within each isolated job.
 
 Inspect expensive fixtures by opening the slowest `--durations=50` entries and
 correlating fixture-heavy node IDs with JUnit XML for the same OS, architecture,
-suite, and shard. Do not claim release speedups until optimized hosted data
-exists; the current tag baseline is 39m16s.
+suite, and shard. Historical release run `34104956270` completed in 39m16s;
+compare a later complete release before claiming an end-to-end improvement.
+
+#### Opt-in performance comparisons
+
+Apply the `ci-performance` PR label to run `ci-release-performance.yml` and
+`ci-source-performance.yml`. The native probe builds one current macOS ARM
+candidate, then compares one four-worker run against two two-worker shards.
+All three consume the same verified archive and the same empty timing
+snapshot, testing cold-history behavior rather than assuming a warm cache.
+The Windows probe compares serial and two-worker execution of the unchanged
+`windows_compat` selection. The probes use read-only permissions and no
+production secrets; they cannot publish or qualify a release candidate.
+
+`scripts.compare_test_runs` checks original pytest node IDs, outcomes, complete
+disjoint shard coverage, source/candidate identity, and runtime/lockfile
+fingerprints before accepting a measured execution improvement of at least
+5%. New skips, missing tests, failures, or different environments fail the
+comparison. JUnit controller elapsed time is reported separately from summed
+runner time; neither includes runner allocation or setup.
+
+Download `arm-performance-comparison-<attempt>` or
+`windows-compat-performance-comparison-<attempt>` for the JSON verdict, and
+the corresponding per-variant artifacts for raw JUnit and timings. Use Actions
+job timestamps to include setup and queue delays. Remove the opt-in label
+before unrelated pushes; these measurements are evidence, not required
+release gates or cached pass results.
 
 ## Debugging Test Failures
 

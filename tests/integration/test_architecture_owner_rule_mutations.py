@@ -182,12 +182,29 @@ MUTATIONS: tuple[MutationCase, ...] = (
         intent="Policy verification bypasses the canonical SHA-2 digest owner.",
     ),
     MutationCase(
+        guard_id="contracts-tooling-policy-identity",
+        rule_id="contracts-tooling-policy-identity",
+        path="src/apm_cli/policy/matcher.py",
+        old="            normalized = normalize_package_policy_identity(\n",
+        new="            normalized = normalize_package_repo_url(\n",
+        intent="Dependency policy matching skips the source-owned identity normalizer.",
+        replace_all=True,
+    ),
+    MutationCase(
         guard_id="contracts-tooling-project-yaml-write-delegation",
         rule_id="contracts-tooling-project-yaml-write-delegation",
         path="src/apm_cli/utils/yaml_io.py",
         old="    atomic_write_text(\n",
         new="    write_text_lf(\n",
         intent="The atomic project YAML writer bypasses the canonical atomic writer.",
+    ),
+    MutationCase(
+        guard_id="contracts-tooling-python-artifact-membership",
+        rule_id="contracts-tooling-python-artifact-membership",
+        path="src/apm_cli/install/deployed_paths.py",
+        old="is_generated_python_artifact(relative)",
+        new="False",
+        intent="Deployed-file inventory stops routing bytecode membership through security/gate.py.",
     ),
     MutationCase(
         guard_id="contracts-tooling-root-context-write-eligibility",
@@ -1074,6 +1091,7 @@ def baseline_violated_rule_ids() -> frozenset[str]:
     return frozenset(violation.rule_id for violation in report.violations)
 
 
+@pytest.mark.lifecycle_smoke
 def test_matrix_covers_every_registry_guard_exactly_once() -> None:
     """The matrix guard set must equal the registry guard set, one case each."""
     matrix_guard_ids = [case.guard_id for case in MUTATIONS]

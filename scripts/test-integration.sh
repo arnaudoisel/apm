@@ -45,15 +45,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/github-token-helper.sh"
 
 log_info() {
-    echo -e "${BLUE}ℹ️  $1${NC}"
+    echo -e "${BLUE}[i] $1${NC}"
 }
 
 log_success() {
-    echo -e "${GREEN}✅ $1${NC}"
+    echo -e "${GREEN}[+] $1${NC}"
 }
 
 log_error() {
-    echo -e "${RED}❌ $1${NC}"
+    echo -e "${RED}[x] $1${NC}"
 }
 
 # Check prerequisites 
@@ -193,6 +193,7 @@ setup_binary_for_testing() {
     
     # The binary is located at ./dist/$BINARY_NAME/apm (directory structure)
     BINARY_PATH="./dist/$BINARY_NAME/apm"
+    export APM_BINARY_PATH="$(pwd)/dist/$BINARY_NAME/apm"
     
     # Make binary executable (like CI does)
     chmod +x "$BINARY_PATH"
@@ -333,12 +334,16 @@ run_e2e_tests() {
     # bare "${arr[@]}" on an empty array raises an unbound-variable error.
     # shellcheck disable=SC2206
     extra_args=(${PYTEST_EXTRA_ARGS:-})
+    pytest_command=(pytest)
+    if [[ " ${extra_args[*]} " == *" scripts.pytest_performance_evidence "* ]]; then
+        pytest_command=(python -m pytest)
+    fi
     marker_args=()
     if [[ -n "${PYTEST_MARK_EXPR:-}" ]]; then
         marker_args=(-m "$PYTEST_MARK_EXPR")
         log_info "Pytest marker selection: $PYTEST_MARK_EXPR"
     fi
-    if pytest tests/integration/ -v --tb=short \
+    if "${pytest_command[@]}" tests/integration/ -v --tb=short \
         --strict-runtime-prerequisites \
         ${extra_args[@]+"${extra_args[@]}"} \
         ${marker_args[@]+"${marker_args[@]}"}; then

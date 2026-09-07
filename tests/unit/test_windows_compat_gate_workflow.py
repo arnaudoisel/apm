@@ -39,6 +39,7 @@ from tests.workflow_contracts import (
 
 ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+SOURCE_PERFORMANCE_WORKFLOW = ROOT / ".github" / "workflows" / "ci-source-performance.yml"
 MERGE_GATE_WORKFLOW = ROOT / ".github" / "workflows" / "merge-gate.yml"
 _COLLECTION_ENV_BASELINE = os.environ.copy()
 
@@ -46,6 +47,11 @@ GATE_JOB = "windows-compat-gate"
 GATE_CHECK_NAME = "Windows Compatibility Gate"
 GATE_STEP = "Run cross-platform contract family"
 GATE_MARKER = "windows_compat"
+SOURCE_PERFORMANCE_JOB = "windows-compat-performance"
+SOURCE_PERFORMANCE_LABEL = "ci-performance"
+SOURCE_PERFORMANCE_SELECTION = (
+    "-m windows_compat tests/unit tests/integration/test_lifecycle_workspace_lock.py"
+)
 
 # The full-suite roots already covered by build-and-test-shard (Linux).
 # The gate must never invoke these WITHOUT a marker filter -- that
@@ -93,7 +99,7 @@ def _gate_pytest_args(step: dict) -> list[str]:
 # Flags that take a value as the following token -- needed to tell
 # "-p" and "-m"'s VALUES apart from genuine positional test-path
 # arguments when computing the selected root(s).
-_VALUE_FLAGS = ("-p", "-m")
+_VALUE_FLAGS = ("-p", "-m", "-n", "--dist")
 
 
 def _positional_test_paths(args: list[str]) -> list[str]:
@@ -136,6 +142,39 @@ def _collect_gate_family(args: list[str]) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=120,
         check=False,
+    )
+
+
+def _without_execution_only_args(args: list[str]) -> list[str]:
+    """Strip scheduling flags that are irrelevant to collect-only selection."""
+    stripped: list[str] = []
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in {"-n", "--numprocesses", "--dist"}:
+            skip_next = True
+            continue
+        if arg.startswith(("--numprocesses=", "--dist=")):
+            continue
+        stripped.append(arg)
+    return stripped
+
+
+def _assert_bounded_loadgroup_parallelism(args: list[str]) -> None:
+    assert "-n" in args, "Windows compatibility gate must declare bounded xdist workers"
+    worker_index = args.index("-n")
+    assert args[worker_index : worker_index + 2] == ["-n", "2"], (
+        "Windows compatibility gate must use exactly two xdist workers"
+    )
+    assert "--dist" in args, "Windows compatibility gate must declare an xdist scheduler"
+    dist_index = args.index("--dist")
+    assert args[dist_index : dist_index + 2] == ["--dist", "loadgroup"], (
+        "Windows compatibility gate must use loadgroup so xdist_group fixture affinity is honored"
+    )
+    assert "--numprocesses=auto" not in args and "-nauto" not in args, (
+        "Windows compatibility gate must not use unbounded automatic worker selection"
     )
 
 
@@ -182,6 +221,14 @@ def test_windows_compat_gate_runs_over_narrowest_maintainable_root() -> None:
         f"{GATE_STEP!r} must scope to the unit contracts and lifecycle subprocess "
         f"contract {expected!r}, got: {positional!r}"
     )
+
+
+def test_windows_compat_gate_uses_bounded_loadgroup_parallelism() -> None:
+    """The required gate may parallelize, but only with bounded worker count
+    and the scheduler that preserves any tests carrying xdist_group affinity."""
+    job = workflow_job(_ci_workflow(), GATE_JOB)
+    step = workflow_step(job, GATE_STEP)
+    _assert_bounded_loadgroup_parallelism(_gate_pytest_args(step))
 
 
 def test_windows_compat_gate_does_not_duplicate_full_suite() -> None:
@@ -232,7 +279,9 @@ def test_windows_compat_gate_marker_selects_nonempty_subset() -> None:
     """
     job = workflow_job(_ci_workflow(), GATE_JOB)
     step = workflow_step(job, GATE_STEP)
-    _assert_gate_family_collection(_collect_gate_family(_gate_pytest_args(step)))
+    _assert_gate_family_collection(
+        _collect_gate_family(_without_execution_only_args(_gate_pytest_args(step)))
+    )
 
 
 @pytest.mark.parametrize(
@@ -310,6 +359,34 @@ def test_nested_collection_disables_plugin_autoload(
 
 
 @pytest.mark.parametrize(
+    "parallel_args",
+    [
+        "",
+        "-n 0 --dist loadgroup",
+        "-n auto --dist loadgroup",
+        "-n 3 --dist loadgroup",
+        "-n 2 --dist worksteal",
+        "-n 2 --dist load",
+        "-n 2",
+        "--dist loadgroup",
+        "-n 2 --dist loadgroup --numprocesses=auto",
+    ],
+)
+def test_windows_compat_gate_parallelism_drift_fails(parallel_args: str) -> None:
+    ci = deepcopy(_ci_workflow())
+    job = workflow_job(ci, GATE_JOB)
+    step = workflow_step(job, GATE_STEP)
+    step["run"] = re.sub(
+        r"\s*-n 2 --dist loadgroup\s*",
+        f"\n        {parallel_args}\n",
+        step["run"],
+    )
+
+    with pytest.raises(AssertionError, match=r"xdist|workers|loadgroup|automatic"):
+        _assert_bounded_loadgroup_parallelism(_gate_pytest_args(step))
+
+
+@pytest.mark.parametrize(
     "expected_checks_key",
     (
         "pull_request",
@@ -382,3 +459,138 @@ def test_narrowing_root_below_windows_compat_root_breaks_contract() -> None:
     assert positional != ["tests/unit"], (
         "mutation setup sanity check failed -- root was not actually narrowed"
     )
+
+
+def _source_performance_workflow() -> dict:
+    return load_workflow(SOURCE_PERFORMANCE_WORKFLOW)
+
+
+def _source_performance_job() -> dict:
+    return workflow_job(_source_performance_workflow(), SOURCE_PERFORMANCE_JOB)
+
+
+def test_source_performance_probe_is_opt_in_read_only_and_bounded() -> None:
+    workflow = _source_performance_workflow()
+    on_block = workflow["on"]
+    assert on_block["pull_request"]["types"] == [
+        "opened",
+        "reopened",
+        "synchronize",
+        "labeled",
+    ]
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["concurrency"]["cancel-in-progress"] is True
+
+    job = workflow_job(workflow, SOURCE_PERFORMANCE_JOB)
+    assert SOURCE_PERFORMANCE_LABEL in job["if"]
+    assert "contains(github.event.pull_request.labels.*.name" in job["if"]
+    assert job["runs-on"] == "windows-latest"
+    timeout = job.get("timeout-minutes")
+    assert isinstance(timeout, int) and 0 < timeout <= 20
+    assert "secrets" not in job
+
+
+def test_source_performance_probe_compares_serial_and_parallel_same_selection() -> None:
+    job = _source_performance_job()
+    matrix = job["strategy"]["matrix"]["include"]
+    assert matrix == [
+        {"variant": "baseline", "pytest_extra": ""},
+        {"variant": "proposed", "pytest_extra": "-n 2 --dist loadgroup"},
+    ]
+    run_step = workflow_step(job, "Run Windows compatibility selection")
+    run = run_step["run"]
+    assert SOURCE_PERFORMANCE_SELECTION in " ".join(run.split())
+    assert "-p scripts.pytest_performance_evidence" in " ".join(run.split())
+    assert "${{ matrix.pytest_extra }}" in run
+    assert "--junitxml=test-results/${{ matrix.variant }}/windows.xml" in run
+    assert "--store-durations" in run
+
+
+def test_source_performance_probe_captures_proof_inventory_and_unique_artifacts() -> None:
+    job = _source_performance_job()
+    collect_step = workflow_step(job, "Record Windows compatibility selection")
+    collect_run = collect_step["run"]
+    assert f"selection={SOURCE_PERFORMANCE_SELECTION.removeprefix('-m ')}" in collect_run
+    assert "test-results/${{ matrix.variant }}/selection.txt" in collect_run
+    assert not any("--collect-only" in step.get("run", "") for step in job["steps"])
+    run = workflow_step(job, "Run Windows compatibility selection")["run"]
+    assert "uv run --frozen --no-sync --extra dev python -m pytest" in run
+
+    capture_step = workflow_step(job, "Capture comparable proof")
+    assert capture_step["if"] == "always()"
+    capture_run = capture_step["run"]
+    assert "python -m scripts.compare_test_runs capture" in capture_run
+    assert "--junit test-results/${{ matrix.variant }}/windows.xml" in capture_run
+    assert "--output test-results/${{ matrix.variant }}/proof.json" in capture_run
+    assert '--source-sha "$env:GITHUB_SHA"' in capture_run
+    assert (
+        "--selection 'windows_compat tests/unit tests/integration/test_lifecycle_workspace_lock.py'"
+        in capture_run
+    )
+    assert "--variant ${{ matrix.variant }}" in capture_run
+    assert "--shard 1" in capture_run
+    assert "--shard-count 1" in capture_run
+
+    upload_step = workflow_step(job, "Upload Windows compatibility performance evidence")
+    assert upload_step["if"] == "always()"
+    assert upload_step["uses"] == (
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    )
+    with_block = upload_step["with"]
+    assert with_block["name"] == (
+        "windows-compat-performance-${{ matrix.variant }}-${{ github.run_attempt }}"
+    )
+    assert with_block["path"] == "test-results/${{ matrix.variant }}/"
+    assert with_block["if-no-files-found"] == "error"
+
+
+def test_source_performance_probe_compares_proofs_after_download() -> None:
+    workflow = _source_performance_workflow()
+    compare_job = workflow_job(workflow, "compare-windows-compat-performance")
+    assert compare_job["name"] == "Compare Windows Compat Performance"
+    assert compare_job["needs"] == [SOURCE_PERFORMANCE_JOB]
+    assert SOURCE_PERFORMANCE_LABEL in compare_job["if"]
+    assert compare_job["runs-on"] == "ubuntu-24.04"
+    timeout = compare_job.get("timeout-minutes")
+    assert isinstance(timeout, int) and 0 < timeout <= 5
+
+    require_step = workflow_step(compare_job, "Require benchmark variants succeeded")
+    assert "needs.windows-compat-performance.result" in require_step["run"]
+    assert '!= "success"' in require_step["run"]
+
+    baseline_download = workflow_step(compare_job, "Download baseline proof")
+    assert baseline_download["uses"] == (
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+    )
+    assert baseline_download["with"] == {
+        "name": "windows-compat-performance-baseline-${{ github.run_attempt }}",
+        "path": "performance-inputs/baseline",
+    }
+    proposed_download = workflow_step(compare_job, "Download proposed proof")
+    assert proposed_download["with"] == {
+        "name": "windows-compat-performance-proposed-${{ github.run_attempt }}",
+        "path": "performance-inputs/proposed",
+    }
+
+    compare_step = workflow_step(compare_job, "Compare equivalent Windows compatibility runs")
+    compare_run = compare_step["run"]
+    assert "python -m scripts.compare_test_runs compare" in compare_run
+    assert "--baseline performance-inputs/baseline/proof.json" in compare_run
+    assert "--proposed performance-inputs/proposed/proof.json" in compare_run
+    assert '--expected-sha "$GITHUB_SHA"' in compare_run
+    assert "--minimum-speedup 0.05" in compare_run
+    assert "--output performance-comparison/comparison.json" in compare_run
+
+
+def test_source_performance_probe_does_not_write_cache_or_production_evidence() -> None:
+    text = SOURCE_PERFORMANCE_WORKFLOW.read_text(encoding="utf-8")
+    forbidden = [
+        "actions/cache",
+        "enable-cache: true",
+        "release-candidate",
+        "candidate-",
+        "GITHUB_APM_PAT",
+        "ADO_APM_PAT",
+        "secrets.",
+    ]
+    assert [token for token in forbidden if token in text] == []

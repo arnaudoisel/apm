@@ -67,6 +67,14 @@ Ordinary `main` green status is not enough. See
 [Integration Testing](../integration-testing/) for the native platform matrix,
 runtime selections, and archive-promotion model.
 
+Maintainers can apply the `ci-performance` PR label to run read-only native
+and Windows before/after comparisons. These probes require identical test
+outcomes and report execution time separately from runner setup and queue
+delays. They neither publish releases nor replace required qualification.
+Remove the label before unrelated follow-up pushes to avoid rerunning them.
+See [performance capture](../integration-testing/#timing-and-performance-capture)
+for artifact names and acceptance criteria.
+
 ### Workflow dependency updates
 
 When updating actions in generated `.github/workflows/*.lock.yml` files,

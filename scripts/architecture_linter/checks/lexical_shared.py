@@ -250,15 +250,21 @@ def duplicate_definition_lines(
     message: str,
     respect_exempt: bool,
 ) -> list[Violation]:
-    """Flag matching definitions outside their canonical owner."""
+    """Flag matching definition-shaped lines outside their canonical owner.
+
+    This is a legacy grep-equivalent check: callers provide the exact lexical
+    pattern that constitutes a duplicate for their owner decision.  Keep the
+    scan on cached source lines so broad duplicate checks do not accidentally
+    parse and index every Python file under the searched prefix.
+    """
     findings: list[Violation] = []
     for path in python_paths(provider, under=prefix):
         if path == owner:
             continue
-        facts = provider.file_facts(path)
-        if facts.read_error is not None:
+        lines, read_error = provider.lexical_lines(path)
+        if read_error is not None:
             continue
-        for number, line in enumerate(facts.lines, start=1):
+        for number, line in enumerate(lines, start=1):
             if respect_exempt and EXEMPT_MARKER in line:
                 continue
             match = pattern.search(line)

@@ -27,10 +27,21 @@ from tests.workflow_contracts import (
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/release-platform.yml"
+INTEGRATION_WORKFLOW = ROOT / ".github/workflows/release-integration.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/build-release.yml"
 UNIX_TIMEOUT = "${{ inputs.integration-markers == 'lifecycle_smoke and not live' && 30 || 60 }}"
 UNIX_ARGS = (
-    "-n 4 --dist loadgroup --durations=50 --store-durations --junitxml=test-results/integration.xml"
+    "${{ inputs.evidence-variant != '' && '-p scripts.pytest_performance_evidence' || '' }} "
+    "--splits ${{ inputs.shard-count }} --group ${{ inputs.shard-index }} "
+    "--splitting-algorithm ${{ inputs.splitting-algorithm }} "
+    "-n ${{ inputs.xdist-workers }} --dist loadgroup "
+    "--durations=50 --store-durations "
+    "--junitxml=test-results/integration-shard-${{ inputs.shard-index }}.xml "
+    "${{ inputs.coverage-enabled && '--cov --cov-fail-under=0' || '' }}"
+)
+SHARD_MATRIX = (
+    "${{ fromJSON(inputs.integration-shard-count == 2 && '{\"shard\":[1,2]}' "
+    "|| '{\"shard\":[1]}') }}"
 )
 SMOKE = "Test native binary startup and core contracts"
 INSTALLER = "Test install.ps1 end-to-end (Windows)"
@@ -38,6 +49,10 @@ INSTALLER = "Test install.ps1 end-to-end (Windows)"
 
 def _workflow() -> dict:
     return load_workflow(WORKFLOW)
+
+
+def _integration_workflow() -> dict:
+    return load_workflow(INTEGRATION_WORKFLOW)
 
 
 def test_candidate_source_authorities_match_the_real_reusable_workflow() -> None:
@@ -96,6 +111,29 @@ def _execute_native_gate(results: dict, full: bool, platform: str) -> list[str]:
     return json.loads(completed.stdout)
 
 
+def _execute_integration_gate(results: dict) -> list[str]:
+    gate = workflow_job(_workflow(), "integration-tests")
+    script = workflow_step(gate, "Require every applicable integration shard")["with"]["script"]
+    harness = (
+        "const failures = [];"
+        "const core = {setFailed: message => failures.push(message)};"
+        f"(new Function('core', {json.dumps(script)}))(core);"
+        "process.stdout.write(JSON.stringify(failures));"
+    )
+    completed = subprocess.run(
+        ["node", "-e", harness],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={
+            **os.environ,
+            "RESULTS": json.dumps(results),
+        },
+    )
+    return json.loads(completed.stdout)
+
+
 @pytest.mark.parametrize(
     "job_name",
     ["unit-tests", "build", "integration-tests", "release-validation", "windows-installer"],
@@ -124,6 +162,16 @@ def test_native_gate_accepts_only_applicable_successes(full: bool, platform: str
     if platform != "windows":
         results["windows-installer"]["result"] = "skipped"
     assert _execute_native_gate(results, full, platform) == []
+
+
+@pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", "neutral", None])
+def test_native_integration_fan_in_requires_shard_matrix_success(result: str | None) -> None:
+    results = {"integration-tests-shard": {"result": "success"}}
+    if result is None:
+        del results["integration-tests-shard"]
+    else:
+        results["integration-tests-shard"]["result"] = result
+    assert _execute_integration_gate(results) == ["integration-tests-shard did not succeed"]
 
 
 def _assert_native_startup(workflow: dict) -> None:
@@ -236,7 +284,11 @@ def test_installer_workflow_inputs_reach_the_actual_candidate_reader(tmp_path: P
 def _assert_parallel_paths(workflow: dict) -> None:
     for name in ("unit-tests", "build"):
         assert "needs" not in workflow_job(workflow, name)
-    for name in ("integration-tests", "release-validation", "windows-installer"):
+    shard = workflow_job(workflow, "integration-tests-shard")
+    assert shard["needs"] == ["build"]
+    assert shard["strategy"]["fail-fast"] is False
+    assert workflow_job(workflow, "integration-tests")["needs"] == ["integration-tests-shard"]
+    for name in ("release-validation", "windows-installer"):
         assert workflow_job(workflow, name)["needs"] == ["build"]
     gate = workflow_job(workflow, "gate")
     assert gate["if"] == "always()"
@@ -253,23 +305,95 @@ def _assert_parallel_paths(workflow: dict) -> None:
     assert "core.setFailed" in step["with"]["script"]
 
 
-def _assert_integration(workflow: dict) -> None:
-    job = workflow_job(workflow, "integration-tests")
-    unix = workflow_step(job, "Run integration tests (Unix)")
+def _assert_integration(workflow: dict, integration: dict) -> None:
+    job = workflow_job(workflow, "integration-tests-shard")
+    assert job["uses"] == "./.github/workflows/release-integration.yml"
+    assert job["strategy"]["fail-fast"] is False
+    assert job["strategy"]["matrix"] == SHARD_MATRIX
+    assert job["with"]["candidate-artifact-name"] == (
+        "candidate-${{ github.run_attempt }}-${{ inputs.binary-name }}"
+    )
+    assert job["with"]["candidate-sha"] == "${{ github.sha }}"
+    assert job["with"]["timing-snapshot-artifact"] == (
+        "integration-duration-snapshot-${{ github.run_attempt }}-${{ inputs.binary-name }}"
+    )
+    assert job["with"]["integration-markers"] == "${{ inputs.integration-markers }}"
+    assert job["with"]["shard-count"] == "${{ inputs.integration-shard-count }}"
+    assert job["with"]["shard-index"] == "${{ matrix.shard }}"
+    assert job["with"]["xdist-workers"] == "${{ inputs.integration-xdist-workers }}"
+    assert job["with"]["splitting-algorithm"] == "${{ inputs.integration-splitting-algorithm }}"
+    assert job["with"]["timeout-minutes"] == UNIX_TIMEOUT
+    assert job["with"]["artifact-prefix"] == "${{ github.run_attempt }}-${{ inputs.binary-name }}"
+    assert job["with"]["runtime-prerequisites"] == "none"
+    build = workflow_job(workflow, "build")
+    snapshot = workflow_step(build, "Freeze integration scheduling hints")
+    assert snapshot["if"] == "inputs.full-validation && inputs.platform != 'windows'"
+    assert snapshot["with"]["snapshot"] == (
+        "integration-duration-snapshot-${{ github.run_attempt }}-${{ inputs.binary-name }}"
+    )
+
+    integration_job = workflow_job(integration, "integration-tests")
+    unpack = workflow_step(integration_job, "Extract checked candidate archive")
+    assert "verify-extract" in shell_tokens(unpack)
+    assert unpack["env"] == {
+        "CANDIDATE_SHA": "${{ inputs.candidate-sha }}",
+        "BINARY_NAME": "${{ inputs.binary-name }}",
+    }
+    unix = workflow_step(integration_job, "Run integration tests (Unix)")
     assert unix["env"]["PYTEST_MARK_EXPR"] == "${{ inputs.integration-markers }}"
     assert unix["env"]["PYTEST_EXTRA_ARGS"] == UNIX_ARGS
-    assert unix["timeout-minutes"] == UNIX_TIMEOUT
     assert unix["env"]["APM_BINARY_PATH"] == (
         "${{ github.workspace }}/dist/${{ inputs.binary-name }}/apm"
     )
-    windows = workflow_step(job, "Run integration tests (Windows)")
+    assert unix["env"]["APM_TEST_RUNTIMES"] == "${{ inputs.runtime-prerequisites }}"
+    assert unix["env"]["APM_RUN_INTEGRATION_TESTS"] == (
+        "${{ inputs.run-network-integration-tests && '1' || '' }}"
+    )
+    windows = workflow_step(integration_job, "Run integration tests (Windows)")
     assert windows["timeout-minutes"] == 20
     assert windows["env"]["APM_BINARY_PATH"].endswith("/apm.exe")
     for step in (unix, windows):
         assert step["env"]["GITHUB_API_TOKEN"] == "${{ github.token }}"
         assert step["env"]["GITHUB_APM_PAT"] == "${{ secrets.GH_CLI_PAT }}"
-        assert "APM_RUN_INFERENCE_TESTS" not in effective_env(workflow, job, step)
+        assert "APM_RUN_INFERENCE_TESTS" not in effective_env(integration, integration_job, step)
     assert "-IncludeLiveADO" not in shell_tokens(windows)
+    capture = workflow_step(integration_job, "Capture integration performance evidence")
+    assert capture["if"] == (
+        "always() && inputs.platform != 'windows' && inputs.evidence-variant != ''"
+    )
+    assert capture["env"] == {
+        "EVIDENCE_SELECTION": "${{ inputs.evidence-selection }}",
+        "PYTEST_MARK_EXPR": "${{ inputs.integration-markers }}",
+    }
+    capture_tokens = shell_tokens(capture)
+    for token in (
+        "scripts.compare_test_runs",
+        "capture",
+        "--junit",
+        "test-results/integration-shard-${{ inputs.shard-index }}.xml",
+        "--source-sha",
+        "${{ inputs.candidate-sha }}",
+        "--variant",
+        "${{ inputs.evidence-variant }}",
+        "--shard-count",
+        "${{ inputs.shard-count }}",
+        "--candidate-metadata",
+        "release-assets/${{ inputs.binary-name }}.json",
+    ):
+        assert token in capture_tokens
+    proof_upload = workflow_step(integration_job, "Upload integration performance evidence")
+    assert proof_upload["if"] == capture["if"]
+    assert proof_upload["with"]["name"] == (
+        "performance-evidence-${{ inputs.artifact-prefix }}-"
+        "${{ inputs.evidence-variant }}-shard-${{ inputs.shard-index }}"
+    )
+    timings_upload = workflow_step(integration_job, "Upload integration timings and outcomes")
+    assert timings_upload["if"] == "always() && inputs.platform != 'windows'"
+    assert timings_upload["with"]["if-no-files-found"] == "error"
+    coverage_upload = workflow_step(integration_job, "Upload coverage data")
+    assert coverage_upload["with"]["name"] == (
+        "integration-coverage-${{ inputs.artifact-prefix }}-shard-${{ inputs.shard-index }}"
+    )
 
 
 def test_native_startup_runs_exact_frozen_candidate_before_packaging() -> None:
@@ -285,7 +409,7 @@ def test_native_jobs_have_no_unit_or_cross_platform_barriers() -> None:
 
 
 def test_native_integration_preserves_grouping_bounds_and_artifact_identity() -> None:
-    _assert_integration(_workflow())
+    _assert_integration(_workflow(), _integration_workflow())
 
 
 def test_platform_catalog_retains_all_native_and_non_live_selections() -> None:
@@ -300,6 +424,16 @@ def test_platform_catalog_retains_all_native_and_non_live_selections() -> None:
         "apm-windows-x86_64": "windows-latest",
     }
     assert rows["apm-darwin-x86_64"]["integration_markers"] == "lifecycle_smoke and not live"
+    assert rows["apm-darwin-arm64"]["integration_shard_count"] == 2
+    assert rows["apm-darwin-arm64"]["integration_xdist_workers"] == 2
+    assert rows["apm-darwin-arm64"]["integration_splitting_algorithm"] == "least_duration"
+    assert all(
+        row["integration_shard_count"] == 1
+        and row["integration_xdist_workers"] == 4
+        and row["integration_splitting_algorithm"] == "duration_based_chunks"
+        for name, row in rows.items()
+        if name != "apm-darwin-arm64"
+    )
     assert all(
         row["integration_markers"] == "not live"
         for name, row in rows.items()
@@ -330,7 +464,14 @@ def test_unit_build_dependency_mutation_is_rejected(job: str) -> None:
         _assert_parallel_paths(workflow)
 
 
-@pytest.mark.parametrize("job", ["integration-tests", "release-validation", "windows-installer"])
+@pytest.mark.parametrize(
+    "job",
+    [
+        "integration-tests-shard",
+        "release-validation",
+        "windows-installer",
+    ],
+)
 def test_reintroduced_barrier_is_rejected(job: str) -> None:
     workflow = deepcopy(_workflow())
     workflow_job(workflow, job)["needs"].append("unit-tests")
@@ -370,13 +511,14 @@ def test_echo_cannot_replace_frozen_smoke() -> None:
 
 @pytest.mark.parametrize("field", ["PYTEST_MARK_EXPR", "PYTEST_EXTRA_ARGS", "APM_BINARY_PATH"])
 def test_missing_integration_safety_argument_is_rejected(field: str) -> None:
-    workflow = deepcopy(_workflow())
+    workflow = _workflow()
+    integration = deepcopy(_integration_workflow())
     step = workflow_step(
-        workflow_job(workflow, "integration-tests"), "Run integration tests (Unix)"
+        workflow_job(integration, "integration-tests"), "Run integration tests (Unix)"
     )
     step["env"][field] = "wrong"
     with pytest.raises(AssertionError):
-        _assert_integration(workflow)
+        _assert_integration(workflow, integration)
 
 
 def test_publication_only_consumes_verified_archives() -> None:
@@ -390,10 +532,32 @@ def test_publication_only_consumes_verified_archives() -> None:
 
 def test_native_artifacts_and_downloads_are_attempt_scoped() -> None:
     workflow = _workflow()
+    integration = _integration_workflow()
     artifact_name = "candidate-${{ github.run_attempt }}-${{ inputs.binary-name }}"
     upload = workflow_step(workflow_job(workflow, "build"), "Upload binary as workflow artifact")
     assert upload["with"]["name"] == artifact_name
-    for name in ("integration-tests", "release-validation", "windows-installer"):
+    assert upload["with"]["compression-level"] == 0
+    unit_upload = workflow_step(
+        workflow_job(workflow, "unit-tests"), "Upload unit timings and outcomes"
+    )
+    assert unit_upload["with"]["name"] == (
+        "test-results-${{ github.run_attempt }}-${{ inputs.binary-name }}-unit"
+    )
+    core_upload = workflow_step(workflow_job(workflow, "build"), "Upload native smoke outcomes")
+    assert core_upload["with"]["name"] == (
+        "test-results-${{ github.run_attempt }}-${{ inputs.binary-name }}-core"
+    )
+    installer_upload = workflow_step(
+        workflow_job(workflow, "windows-installer"), "Upload installer outcomes"
+    )
+    assert installer_upload["with"]["name"] == (
+        "test-results-${{ github.run_attempt }}-${{ inputs.binary-name }}-installer"
+    )
+    assert (
+        workflow_job(workflow, "integration-tests-shard")["with"]["candidate-artifact-name"]
+        == artifact_name
+    )
+    for name in ("release-validation", "windows-installer"):
         downloads = [
             step
             for step in workflow_job(workflow, name)["steps"]
@@ -401,6 +565,13 @@ def test_native_artifacts_and_downloads_are_attempt_scoped() -> None:
         ]
         assert len(downloads) == 1
         assert downloads[0]["with"]["name"] == artifact_name
+    download = next(
+        step
+        for step in workflow_job(integration, "integration-tests")["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact@")
+        and step.get("with", {}).get("name") == "${{ inputs.candidate-artifact-name }}"
+    )
+    assert download["with"]["name"] == "${{ inputs.candidate-artifact-name }}"
 
 
 def test_tag_downloads_only_exact_selected_artifact_ids() -> None:
@@ -426,20 +597,22 @@ def test_tag_downloads_only_exact_selected_artifact_ids() -> None:
 
 
 @pytest.mark.parametrize(
-    ("job_name", "authority"),
+    ("job_name", "authorities"),
     [
-        ("create-release", "verify-candidate"),
-        ("deploy-docs", "create-release"),
-        ("gh-aw-compat", "create-release"),
-        ("build-pypi-distributions", "create-release"),
-        ("publish-pypi", "build-pypi-distributions"),
+        ("create-release", ["verify-candidate"]),
+        ("build-docs-artifact", ["plan"]),
+        ("deploy-docs", ["create-release", "build-docs-artifact"]),
+        ("gh-aw-compat", ["create-release"]),
+        ("build-pypi-distributions", ["plan"]),
+        ("publish-pypi", ["create-release", "build-pypi-distributions"]),
     ],
 )
 def test_warm_release_descendants_require_success_without_skipped_ancestor_poisoning(
-    job_name: str, authority: str
+    job_name: str, authorities: list[str]
 ) -> None:
     job = workflow_job(load_workflow(RELEASE_WORKFLOW), job_name)
-    assert authority in job["needs"]
     assert "always()" in job["if"]
     assert "!cancelled()" in job["if"]
-    assert f"needs.{authority}.result == 'success'" in job["if"]
+    for authority in authorities:
+        assert authority in job["needs"]
+        assert f"needs.{authority}.result == 'success'" in job["if"]

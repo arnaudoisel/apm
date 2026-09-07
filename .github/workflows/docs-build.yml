@@ -1,0 +1,98 @@
+name: Build Docs Artifact
+
+on:
+  workflow_call:
+    inputs:
+      pages_artifact_name:
+        description: 'Name for the uploaded Pages artifact.'
+        required: false
+        type: string
+        default: github-pages
+      upload_pages_artifact:
+        description: 'Upload the rendered docs as a Pages artifact.'
+        required: false
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      pages_artifact_name:
+        description: 'Name for the uploaded Pages artifact.'
+        required: false
+        type: string
+        default: github-pages
+      upload_pages_artifact:
+        description: 'Upload the rendered docs as a Pages artifact for read-only timing.'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: 'docs/package-lock.json'
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install Python test dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Install dependencies
+        working-directory: ./docs
+        run: npm ci
+
+      - name: Test generated-link checker
+        working-directory: ./docs
+        run: npm run test:links
+
+      - name: Test CLI registry contract
+        run: >-
+          uv run --frozen pytest
+          tests/unit/test_cli_docs_contract.py
+          tests/integration/test_cli_docs_contract.py
+          -q
+
+      - name: Build documentation
+        working-directory: ./docs
+        run: npm run build
+
+      - name: Check CLI registry against rendered pages
+        run: uv run --frozen python scripts/check_cli_docs.py docs/dist
+
+      - name: Verify schema $id reachability
+        # Asserts every JSON Schema's declared $id URL resolves to a
+        # byte-identical file in the build output. Without this, a
+        # schema move or $id typo would silently break every toolchain
+        # that pinned to the canonical URL. Uses python3 stdlib only.
+        run: python3 scripts/check_schema_ids.py
+
+      - name: Upload build artifacts
+        if: inputs.upload_pages_artifact != false
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          name: ${{ inputs.pages_artifact_name || 'github-pages' }}
+          path: docs/dist

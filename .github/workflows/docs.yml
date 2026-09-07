@@ -3,19 +3,14 @@ name: Deploy Docs
 on:
   # Deploy docs only when a new APM version is released, so the published
   # site always matches the latest released binary (see microsoft/apm#641).
-  # Primary entrypoint is workflow_call from the CI/CD Pipeline release job
-  # (release: published does not fire when the release is created by
-  # GITHUB_TOKEN -- a documented Actions safeguard against recursion).
+  # This wrapper delegates all rendering and checks to docs-build.yml. The
+  # release pipeline calls docs-build.yml directly for read-only prebuilds,
+  # keeping Pages/OIDC permissions out of that reusable call chain.
+  # release: published does not fire when the release is created by
+  # GITHUB_TOKEN -- a documented Actions safeguard against recursion.
   # The release: published trigger is kept as a safety net for human-cut
   # releases. PR runs build (no deploy) to catch breakage before merge.
   # Manual workflow_dispatch is supported for re-publishing the current docs.
-  workflow_call:
-    inputs:
-      is_prerelease:
-        description: 'Skip deploy when true (build-only). Defaults to false (deploy).'
-        required: false
-        type: boolean
-        default: false
   release:
     types: [published]
   pull_request:
@@ -27,7 +22,24 @@ on:
       - 'tests/unit/test_cli_docs_contract.py'
       - 'tests/integration/test_cli_docs_contract.py'
       - '.github/workflows/docs.yml'
+      - '.github/workflows/docs-build.yml'
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: 'Deploy after building docs. Set false for read-only timing.'
+        required: false
+        type: boolean
+        default: true
+      pages_artifact_name:
+        description: 'Name for the uploaded Pages artifact.'
+        required: false
+        type: string
+        default: github-pages
+      upload_pages_artifact:
+        description: 'Upload the rendered docs as a Pages artifact.'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -38,84 +50,26 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: 'docs/package-lock.json'
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
-
-      - name: Install Python test dependencies
-        run: uv sync --frozen --extra dev
-
-      - name: Install dependencies
-        working-directory: ./docs
-        run: npm ci
-
-      - name: Test generated-link checker
-        working-directory: ./docs
-        run: npm run test:links
-
-      - name: Test CLI registry contract
-        run: >-
-          uv run --frozen pytest
-          tests/unit/test_cli_docs_contract.py
-          tests/integration/test_cli_docs_contract.py
-          -q
-
-      - name: Build documentation
-        working-directory: ./docs
-        run: npm run build
-
-      - name: Check CLI registry against rendered pages
-        run: uv run --frozen python scripts/check_cli_docs.py docs/dist
-
-      - name: Verify schema $id reachability
-        # Asserts every JSON Schema's declared $id URL resolves to a
-        # byte-identical file in the build output. Without this, a
-        # schema move or $id typo would silently break every toolchain
-        # that pinned to the canonical URL. Uses python3 stdlib only.
-        run: python3 scripts/check_schema_ids.py
-
-      - name: Upload build artifacts
-        # NOTE: in a reusable workflow, github.event_name reflects the CALLER's
-        # event (here: 'push' of a v* tag from build-release.yml), NOT
-        # 'workflow_call'. Detect the workflow_call invocation via the tag-push
-        # context instead. PR runs (event_name == 'pull_request') correctly
-        # build-only because none of the three branches match.
-        if: |
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'release' && github.event.release.prerelease == false) ||
-          (github.event_name == 'push' && github.ref_type == 'tag' && inputs.is_prerelease == false)
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: docs/dist
+    name: Build Docs Artifact
+    uses: ./.github/workflows/docs-build.yml
+    permissions:
+      contents: read
+    with:
+      pages_artifact_name: ${{ inputs.pages_artifact_name || 'github-pages' }}
+      upload_pages_artifact: >-
+        ${{
+          (github.event_name == 'workflow_dispatch' && inputs.upload_pages_artifact != false) ||
+          (github.event_name == 'release' && github.event.release.prerelease == false)
+        }}
 
   deploy:
     needs: build
     # Only stable releases (or manual dispatch) update the public docs site,
     # so prerelease tags (vX.Y.Z-rc1, etc.) don't clobber published docs.
-    # NOTE: in a reusable workflow, github.event_name reflects the CALLER's
-    # event ('push' of a v* tag from build-release.yml), NOT 'workflow_call'.
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'release' && github.event.release.prerelease == false) ||
-      (github.event_name == 'push' && github.ref_type == 'tag' && inputs.is_prerelease == false)
+    if: >-
+      always() && !cancelled() && needs.build.result == 'success' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.deploy != false) ||
+       (github.event_name == 'release' && github.event.release.prerelease == false))
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -127,3 +81,5 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        with:
+          artifact_name: ${{ inputs.pages_artifact_name || 'github-pages' }}

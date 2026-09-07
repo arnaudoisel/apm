@@ -15,6 +15,15 @@ on:
       integration-markers:
         type: string
         default: not live
+      integration-shard-count:
+        type: number
+        default: 1
+      integration-xdist-workers:
+        type: number
+        default: 4
+      integration-splitting-algorithm:
+        type: string
+        default: duration_based_chunks
       full-validation:
         type: boolean
         required: true
@@ -79,7 +88,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test-results-${{ inputs.binary-name }}-unit
+          name: test-results-${{ github.run_attempt }}-${{ inputs.binary-name }}-unit
           path: |
             test-results/
             .test_durations
@@ -130,6 +139,12 @@ jobs:
         run: >-
           python scripts/package_release.py pack
           --binary-name "$BINARY_NAME" --sha "$CANDIDATE_SHA"
+      - name: Freeze integration scheduling hints
+        if: inputs.full-validation && inputs.platform != 'windows'
+        uses: ./.github/actions/pytest-timing
+        with:
+          suite: integration
+          snapshot: integration-duration-snapshot-${{ github.run_attempt }}-${{ inputs.binary-name }}
       - name: Upload binary as workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -147,90 +162,58 @@ jobs:
           include-hidden-files: true
           retention-days: 30
           if-no-files-found: error
+          compression-level: 0
       - name: Upload native smoke outcomes
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test-results-${{ inputs.binary-name }}-core
+          name: test-results-${{ github.run_attempt }}-${{ inputs.binary-name }}-core
           path: test-results/
           if-no-files-found: error
           retention-days: 30
 
-  integration-tests:
-    name: Integration Tests
+  integration-tests-shard:
+    name: Integration Tests Shard ${{ matrix.shard }}
     needs: [build]
     if: inputs.full-validation
-    runs-on: ${{ inputs.runner }}
-    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.integration-shard-count == 2 && '{"shard":[1,2]}' || '{"shard":[1]}') }}
+    uses: ./.github/workflows/release-integration.yml
+    with:
+      runner: ${{ inputs.runner }}
+      platform: ${{ inputs.platform }}
+      binary-name: ${{ inputs.binary-name }}
+      candidate-artifact-name: candidate-${{ github.run_attempt }}-${{ inputs.binary-name }}
+      candidate-sha: ${{ github.sha }}
+      timing-snapshot-artifact: integration-duration-snapshot-${{ github.run_attempt }}-${{ inputs.binary-name }}
+      integration-markers: ${{ inputs.integration-markers }}
+      shard-count: ${{ inputs.integration-shard-count }}
+      shard-index: ${{ matrix.shard }}
+      xdist-workers: ${{ inputs.integration-xdist-workers }}
+      splitting-algorithm: ${{ inputs.integration-splitting-algorithm }}
+      timeout-minutes: ${{ inputs.integration-markers == 'lifecycle_smoke and not live' && 30 || 60 }}
+      artifact-prefix: ${{ github.run_attempt }}-${{ inputs.binary-name }}
+      runtime-prerequisites: none
+    secrets:
+      GH_CLI_PAT: ${{ secrets.GH_CLI_PAT }}
+
+  integration-tests:
+    name: Integration Tests
+    needs: [integration-tests-shard]
+    if: always() && inputs.full-validation
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: candidate-${{ github.run_attempt }}-${{ inputs.binary-name }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
-      - name: Install Linux shell test runtimes
-        if: inputs.platform == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y fish zsh
-      - name: Install macOS shell test runtimes
-        if: inputs.platform == 'darwin'
-        run: |
-          brew list bash >/dev/null 2>&1 || brew install bash
-          brew list fish >/dev/null 2>&1 || brew install fish
-      - name: Install dependencies
-        run: uv sync --frozen --extra dev
-      - name: Extract checked candidate archive
+      - name: Require every applicable integration shard
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          CANDIDATE_SHA: ${{ github.sha }}
-          BINARY_NAME: ${{ inputs.binary-name }}
-        shell: bash
-        run: >-
-          python scripts/package_release.py verify-extract
-          --binary-name "$BINARY_NAME" --sha "$CANDIDATE_SHA"
-      - uses: ./.github/actions/pytest-timing
+          RESULTS: ${{ toJSON(needs) }}
         with:
-          suite: integration
-      - name: Run integration tests (Unix)
-        if: inputs.platform != 'windows'
-        timeout-minutes: ${{ inputs.integration-markers == 'lifecycle_smoke and not live' && 30 || 60 }}
-        env:
-          APM_E2E_TESTS: '1'
-          APM_BINARY_PATH: ${{ github.workspace }}/dist/${{ inputs.binary-name }}/apm
-          GITHUB_API_TOKEN: ${{ github.token }}
-          GITHUB_APM_PAT: ${{ secrets.GH_CLI_PAT }}
-          PYTEST_MARK_EXPR: ${{ inputs.integration-markers }}
-          APM_TEST_RUNTIMES: ${{ inputs.integration-markers == 'lifecycle_smoke and not live' && 'none' || 'copilot' }}
-          PYTEST_EXTRA_ARGS: -n 4 --dist loadgroup --durations=50 --store-durations --junitxml=test-results/integration.xml
-        run: uv run --frozen bash scripts/test-integration.sh
-      - name: Run integration tests (Windows)
-        if: inputs.platform == 'windows'
-        timeout-minutes: 20
-        env:
-          APM_E2E_TESTS: '1'
-          APM_BINARY_PATH: ${{ github.workspace }}/dist/${{ inputs.binary-name }}/apm.exe
-          GITHUB_API_TOKEN: ${{ github.token }}
-          GITHUB_APM_PAT: ${{ secrets.GH_CLI_PAT }}
-        run: uv run --frozen pwsh scripts/windows/test-integration.ps1 -SkipBuild
-      - name: Upload integration timings and outcomes
-        if: always() && inputs.platform != 'windows'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: test-results-${{ inputs.binary-name }}-integration
-          path: |
-            test-results/
-            .test_durations
-          include-hidden-files: true
-          retention-days: 30
-          if-no-files-found: error
+          script: |
+            const results = JSON.parse(process.env.RESULTS);
+            if (results['integration-tests-shard']?.result !== 'success') {
+              core.setFailed('integration-tests-shard did not succeed');
+            }
 
   # No checkout or editable package: validate the actual archive on a fresh
   # native runner, independently of integration and its mutable HOME/caches.
@@ -332,7 +315,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test-results-${{ inputs.binary-name }}-installer
+          name: test-results-${{ github.run_attempt }}-${{ inputs.binary-name }}-installer
           path: test-results/
           retention-days: 30
           if-no-files-found: error

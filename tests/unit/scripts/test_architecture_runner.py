@@ -36,6 +36,7 @@ from pathlib import Path
 import pytest
 
 from scripts.architecture_linter import runner
+from scripts.architecture_linter.checks.lexical_shared import duplicate_definition_lines
 from scripts.architecture_linter.diagnostics import (
     LEGACY_AC_ALIASES,
     DiagnosticCollector,
@@ -115,6 +116,75 @@ def test_source_cache_allows_only_safe_test_scoped_overrides(tmp_path: Path) -> 
     text, error = cache.read("../outside.py")
     assert text is None
     assert "unsafe repository-relative path" in (error or "")
+
+
+def test_duplicate_definition_lines_uses_lexical_reads_not_python_parse(tmp_path: Path) -> None:
+    """Duplicate scans are grep-equivalent and must not parse every candidate."""
+    owner = "src/apm_cli/owner.py"
+    duplicate = "src/apm_cli/duplicate.py"
+    (tmp_path / "src/apm_cli").mkdir(parents=True)
+    (tmp_path / owner).write_text("def clone():\n    return 1\n", encoding="utf-8")
+    # Syntactically invalid, but the duplicate line is still lexically visible.
+    (tmp_path / duplicate).write_text("def clone(\n", encoding="utf-8")
+    provider = FactsProvider(tmp_path, (owner, duplicate), registry=None)
+
+    findings = duplicate_definition_lines(
+        provider,
+        rule_id="rule",
+        prefix="src/apm_cli/",
+        pattern=re.compile(r"^def clone\("),
+        owner=owner,
+        message="duplicate clone",
+        respect_exempt=False,
+    )
+
+    assert [(item.path, item.line, item.column, item.message) for item in findings] == [
+        (duplicate, 1, 1, "duplicate clone")
+    ]
+    assert provider.source_cache.read_attempts == 1
+    assert provider.parse_cache.parse_attempts == 0
+    assert provider.tree_index_builds == 0
+
+
+def test_duplicate_definition_lines_respects_exemptions_overrides_and_read_errors(
+    tmp_path: Path,
+) -> None:
+    """Lexical duplicate scans keep their exemption, override, and error behavior."""
+    owner = "src/apm_cli/owner.py"
+    exempt = "src/apm_cli/exempt.py"
+    override = "src/apm_cli/override.py"
+    unreadable = "src/apm_cli/unreadable.py"
+    (tmp_path / "src/apm_cli").mkdir(parents=True)
+    (tmp_path / owner).write_text("def clone():\n    return 1\n", encoding="utf-8")
+    (tmp_path / exempt).write_text(
+        "def clone():  # architecture-authority-exempt: covered elsewhere\n",
+        encoding="utf-8",
+    )
+    (tmp_path / override).write_text("def not_a_clone():\n    return 1\n", encoding="utf-8")
+    provider = FactsProvider(
+        tmp_path,
+        (owner, exempt, override, unreadable),
+        registry=None,
+        source_overrides={
+            override: "def clone():\n    return 2\n",
+            unreadable: b"\xff\xfe",
+        },
+    )
+
+    findings = duplicate_definition_lines(
+        provider,
+        rule_id="rule",
+        prefix="src/apm_cli/",
+        pattern=re.compile(r"^def clone\("),
+        owner=owner,
+        message="duplicate clone",
+        respect_exempt=True,
+    )
+
+    assert [(item.path, item.line, item.column) for item in findings] == [(override, 1, 1)]
+    assert provider.source_cache.read_attempts == 3
+    assert provider.source_cache.read_errors == 1
+    assert provider.parse_cache.parse_attempts == 0
 
 
 def test_parse_cache_parses_each_source_once_including_syntax_errors() -> None:

@@ -152,6 +152,7 @@ jobs:
     - name: Run cross-platform contract family
       run: >-
         uv run --extra dev pytest -p no:cacheprovider -v
+        -n 2 --dist loadgroup
         -m windows_compat
         tests/unit
         tests/integration/test_lifecycle_workspace_lock.py

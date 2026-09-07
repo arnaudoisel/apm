@@ -76,8 +76,9 @@ LIFECYCLE_SMOKE_REQUIRED_EXPRESSION = (
     f"{LIFECYCLE_SMOKE_FULL_EXPRESSION} and not {LIFECYCLE_SMOKE_MERGE_GROUP_MARKER}"
 )
 MERGE_GROUP_INTEGRATION_WORKFLOW = REPO_ROOT / ".github/workflows/ci-integration.yml"
+SHARED_INTEGRATION_WORKFLOW = REPO_ROOT / ".github/workflows/release-integration.yml"
 MERGE_GROUP_INTEGRATION_JOB = "integration-tests-shard"
-MERGE_GROUP_INTEGRATION_STEP = "Run integration tests (sharded + parallelized)"
+MERGE_GROUP_INTEGRATION_STEP = "Run integration tests (Unix)"
 MERGE_GROUP_INTEGRATION_SCRIPT = REPO_ROOT / "scripts/test-integration.sh"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 FORBIDDEN_CREDENTIAL_ENV = ("GITHUB_APM_PAT", "ADO_APM_PAT", "GITHUB_TOKEN")
@@ -715,11 +716,48 @@ def _assert_merge_group_full_lifecycle_path() -> None:
     """Pin the merge-group workflow path that executes the full integration root."""
     workflow = load_workflow(MERGE_GROUP_INTEGRATION_WORKFLOW)
     job = workflow_job(workflow, MERGE_GROUP_INTEGRATION_JOB)
-    step = workflow_step(job, MERGE_GROUP_INTEGRATION_STEP)
+    assert "if" not in job
+    assert job["uses"] == "./.github/workflows/release-integration.yml"
+    assert job["with"]["platform"] == "linux"
+    assert job["with"]["integration-markers"] == "not live"
+    shared = load_workflow(SHARED_INTEGRATION_WORKFLOW)
+    executor = workflow_job(shared, "integration-tests")
+    assert "if" not in executor
+    step = workflow_step(executor, MERGE_GROUP_INTEGRATION_STEP)
+    assert step["if"] == "inputs.platform != 'windows'"
     assert step["env"][LIFECYCLE_SMOKE_E2E_ENV] == LIFECYCLE_SMOKE_E2E_VALUE
-    assert "uv run ./scripts/test-integration.sh" in step["run"]
+    assert step["env"]["PYTEST_MARK_EXPR"] == "${{ inputs.integration-markers }}"
+    assert ["uv", "run", "--frozen", "bash", "scripts/test-integration.sh"] in shell_commands(step)
     script = MERGE_GROUP_INTEGRATION_SCRIPT.read_text(encoding="utf-8")
-    assert "pytest tests/integration/ -v" in script
+    assert "pytest_command=(pytest)" in script
+    assert re.search(
+        r'^\s*if "\$\{pytest_command\[@\]\}" tests/integration/ -v\b', script, re.MULTILINE
+    )
+
+
+@pytest.mark.parametrize(
+    "fault", ["disabled-caller", "focused-marker", "disabled-runner", "no-e2e"]
+)
+def test_merge_group_full_lifecycle_delegation_mutations_fail(
+    monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    workflows = {
+        path: load_workflow(path)
+        for path in (MERGE_GROUP_INTEGRATION_WORKFLOW, SHARED_INTEGRATION_WORKFLOW)
+    }
+    caller = workflow_job(workflows[MERGE_GROUP_INTEGRATION_WORKFLOW], MERGE_GROUP_INTEGRATION_JOB)
+    executor = workflow_job(workflows[SHARED_INTEGRATION_WORKFLOW], "integration-tests")
+    if fault == "disabled-caller":
+        caller["if"] = False
+    elif fault == "focused-marker":
+        caller["with"]["integration-markers"] = "lifecycle_smoke"
+    elif fault == "disabled-runner":
+        executor["if"] = False
+    else:
+        workflow_step(executor, MERGE_GROUP_INTEGRATION_STEP)["env"].pop(LIFECYCLE_SMOKE_E2E_ENV)
+    monkeypatch.setattr(sys.modules[__name__], "load_workflow", workflows.__getitem__)
+    with pytest.raises((AssertionError, KeyError)):
+        _assert_merge_group_full_lifecycle_path()
 
 
 def test_lifecycle_smoke_is_required_and_hermetic() -> None:

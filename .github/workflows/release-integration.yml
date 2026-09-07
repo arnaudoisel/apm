@@ -1,0 +1,211 @@
+name: Release integration shard
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        required: true
+      platform:
+        type: string
+        required: true
+      binary-name:
+        type: string
+        required: true
+      candidate-artifact-name:
+        type: string
+        required: true
+      candidate-sha:
+        type: string
+        required: true
+      timing-snapshot-artifact:
+        type: string
+        required: true
+      integration-markers:
+        type: string
+        default: not live
+      shard-count:
+        type: number
+        default: 1
+      shard-index:
+        type: number
+        default: 1
+      xdist-workers:
+        type: number
+        default: 4
+      splitting-algorithm:
+        type: string
+        default: duration_based_chunks
+      timeout-minutes:
+        type: number
+        default: 60
+      artifact-prefix:
+        type: string
+        required: true
+      runtime-prerequisites:
+        type: string
+        default: none
+      run-network-integration-tests:
+        type: boolean
+        default: false
+      cache-apm-fetches:
+        type: boolean
+        default: false
+      coverage-enabled:
+        type: boolean
+        default: false
+      evidence-variant:
+        type: string
+        default: ''
+      evidence-selection:
+        type: string
+        default: ''
+    secrets:
+      GH_CLI_PAT:
+        required: false
+      ADO_APM_PAT:
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  integration-tests:
+    name: Integration Tests Shard ${{ inputs.shard-index }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.candidate-artifact-name }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - name: Install Linux shell test runtimes
+        if: inputs.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fish zsh
+      - name: Install macOS shell test runtimes
+        if: inputs.platform == 'darwin'
+        run: |
+          brew list bash >/dev/null 2>&1 || brew install bash
+          brew list fish >/dev/null 2>&1 || brew install fish
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+      - name: Extract checked candidate archive
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate-sha }}
+          BINARY_NAME: ${{ inputs.binary-name }}
+        shell: bash
+        run: >-
+          python scripts/package_release.py verify-extract
+          --binary-name "$BINARY_NAME" --sha "$CANDIDATE_SHA"
+      - name: Download shared integration scheduling snapshot
+        if: inputs.platform != 'windows'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.timing-snapshot-artifact }}
+      - name: Compute cache week bucket
+        if: inputs.cache-apm-fetches
+        id: cache-bucket
+        run: echo "week=$(date -u +'%Y-%U')" >> "$GITHUB_OUTPUT"
+      - name: Cache APM resolved git/HTTP fetches
+        if: inputs.cache-apm-fetches
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/apm
+          key: apm-cache-shard${{ inputs.shard-index }}-${{ steps.cache-bucket.outputs.week }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            apm-cache-shard${{ inputs.shard-index }}-${{ steps.cache-bucket.outputs.week }}-
+            apm-cache-shard${{ inputs.shard-index }}-
+      - name: Run integration tests (Unix)
+        if: inputs.platform != 'windows'
+        env:
+          APM_E2E_TESTS: '1'
+          APM_BINARY_PATH: ${{ github.workspace }}/dist/${{ inputs.binary-name }}/apm
+          GITHUB_API_TOKEN: ${{ github.token }}
+          GITHUB_APM_PAT: ${{ secrets.GH_CLI_PAT }}
+          ADO_APM_PAT: ${{ secrets.ADO_APM_PAT }}
+          APM_RUN_INTEGRATION_TESTS: ${{ inputs.run-network-integration-tests && '1' || '' }}
+          PYTEST_MARK_EXPR: ${{ inputs.integration-markers }}
+          APM_TEST_RUNTIMES: ${{ inputs.runtime-prerequisites }}
+          PYTEST_EXTRA_ARGS: >-
+            ${{ inputs.evidence-variant != '' && '-p scripts.pytest_performance_evidence' || '' }}
+            --splits ${{ inputs.shard-count }} --group ${{ inputs.shard-index }}
+            --splitting-algorithm ${{ inputs.splitting-algorithm }}
+            -n ${{ inputs.xdist-workers }} --dist loadgroup
+            --durations=50 --store-durations
+            --junitxml=test-results/integration-shard-${{ inputs.shard-index }}.xml
+            ${{ inputs.coverage-enabled && '--cov --cov-fail-under=0' || '' }}
+        run: uv run --frozen bash scripts/test-integration.sh
+      - name: Run integration tests (Windows)
+        if: inputs.platform == 'windows'
+        timeout-minutes: 20
+        env:
+          APM_E2E_TESTS: '1'
+          APM_BINARY_PATH: ${{ github.workspace }}/dist/${{ inputs.binary-name }}/apm.exe
+          GITHUB_API_TOKEN: ${{ github.token }}
+          GITHUB_APM_PAT: ${{ secrets.GH_CLI_PAT }}
+        run: uv run --frozen pwsh scripts/windows/test-integration.ps1 -SkipBuild
+      - name: Capture integration performance evidence
+        if: always() && inputs.platform != 'windows' && inputs.evidence-variant != ''
+        env:
+          EVIDENCE_SELECTION: ${{ inputs.evidence-selection }}
+          PYTEST_MARK_EXPR: ${{ inputs.integration-markers }}
+        run: |
+          mkdir -p performance-evidence
+          selection="${EVIDENCE_SELECTION:-tests/integration/ -m $PYTEST_MARK_EXPR}"
+          python -m scripts.compare_test_runs capture \
+            --junit "test-results/integration-shard-${{ inputs.shard-index }}.xml" \
+            --output "performance-evidence/${{ inputs.evidence-variant }}-shard-${{ inputs.shard-index }}.json" \
+            --source-sha "${{ inputs.candidate-sha }}" \
+            --selection "$selection" \
+            --variant "${{ inputs.evidence-variant }}" \
+            --shard "${{ inputs.shard-index }}" \
+            --shard-count "${{ inputs.shard-count }}" \
+            --candidate-metadata "release-assets/${{ inputs.binary-name }}.json"
+      - name: Upload integration timings and outcomes
+        if: always() && inputs.platform != 'windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-${{ inputs.artifact-prefix }}-integration-shard-${{ inputs.shard-index }}
+          path: |
+            test-results/
+            .test_durations
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+      - name: Upload integration performance evidence
+        if: always() && inputs.platform != 'windows' && inputs.evidence-variant != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: performance-evidence-${{ inputs.artifact-prefix }}-${{ inputs.evidence-variant }}-shard-${{ inputs.shard-index }}
+          path: performance-evidence/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Rename coverage data for shard
+        if: always() && inputs.coverage-enabled
+        run: |
+          if [ -f .coverage ]; then
+            mv .coverage .coverage.shard-${{ inputs.shard-index }}
+          fi
+      - name: Upload coverage data
+        if: always() && inputs.coverage-enabled
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: integration-coverage-${{ inputs.artifact-prefix }}-shard-${{ inputs.shard-index }}
+          path: .coverage.shard-${{ inputs.shard-index }}
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: ignore

@@ -14,6 +14,21 @@ const SHA = "a".repeat(40);
 const OTHER_SHA = "b".repeat(40);
 const NOW = new Date().toISOString();
 
+it("fingerprints every local reusable workflow reachable from release qualification", () => {
+  const pending = [rc.WORKFLOW_PATH];
+  const visited = new Set();
+  while (pending.length) {
+    const file = pending.pop();
+    if (visited.has(file)) continue;
+    visited.add(file);
+    assert.ok(rc.CONFIG_HASH_FILES.includes(file), `Missing workflow fingerprint: ${file}`);
+    const source = fs.readFileSync(path.join(ROOT, file), "utf8");
+    for (const match of source.matchAll(/uses:\s*\.\/(\.github\/workflows\/[\w.-]+\.ya?ml)/g)) {
+      pending.push(match[1]);
+    }
+  }
+});
+
 function catalog() {
   return JSON.parse(fs.readFileSync(path.join(__dirname, "release-platforms.json"), "ascii"));
 }

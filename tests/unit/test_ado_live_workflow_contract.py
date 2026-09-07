@@ -12,7 +12,6 @@ import pytest
 from tests.integration import test_ado_e2e
 from tests.workflow_contracts import (
     assert_exact_command,
-    effective_env,
     load_workflow,
     shell_commands,
     shell_tokens,
@@ -25,7 +24,7 @@ RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release-platform.yml"
 AUTH_WORKFLOW = ROOT / ".github" / "workflows" / "auth-acceptance.yml"
 INTEGRATION_SCRIPT = ROOT / "scripts" / "test-integration.sh"
 LIVE_ADO_SELECTOR = "live and requires_ado_pat"
-RELEASE_INTEGRATION_STEPS = (("integration-tests", "Run integration tests (Unix)"),)
+RELEASE_INTEGRATION_JOBS = ("integration-tests-shard",)
 
 
 def _walk_nodes(value: Any) -> list[dict[str, Any]]:
@@ -48,17 +47,18 @@ def _assert_release_excludes_live_ado(workflow: dict[str, Any]) -> None:
         if isinstance(env, dict):
             assert "ADO_APM_PAT" not in env
 
-    for job_id, step_name in RELEASE_INTEGRATION_STEPS:
+    for job_id in RELEASE_INTEGRATION_JOBS:
         job = workflow_job(workflow, job_id)
-        step = workflow_step(job, step_name)
-        marker_expression = effective_env(workflow, job, step).get("PYTEST_MARK_EXPR")
+        marker_expression = job["with"].get("integration-markers")
         assert isinstance(marker_expression, str)
         assert marker_expression == "${{ inputs.integration-markers }}"
+        assert job["secrets"] == {"GH_CLI_PAT": "${{ secrets.GH_CLI_PAT }}"}
     platforms = json.loads((ROOT / "scripts/release-platforms.json").read_text("ascii"))
     assert all("not live" in row["integration_markers"] for row in platforms)
 
+    reusable = load_workflow(ROOT / ".github/workflows/release-integration.yml")
     windows_step = workflow_step(
-        workflow_job(workflow, "integration-tests"),
+        workflow_job(reusable, "integration-tests"),
         "Run integration tests (Windows)",
     )
     assert "-IncludeLiveADO" not in shell_tokens(windows_step)
@@ -133,6 +133,21 @@ def test_integration_script_owns_explicit_marker_selection() -> None:
     )
 
 
+def test_integration_script_exports_explicit_candidate_binary_path() -> None:
+    """The integration harness must not rely on PATH-only candidate discovery."""
+    script = INTEGRATION_SCRIPT.read_text(encoding="utf-8")
+    assert 'export APM_BINARY_PATH="$(pwd)/dist/$BINARY_NAME/apm"' in script
+
+
+def test_integration_script_uses_module_pytest_for_performance_plugin() -> None:
+    """The proof plugin must load through repo-root module imports, not console pytest."""
+    script = INTEGRATION_SCRIPT.read_text(encoding="utf-8")
+    assert "pytest_command=(pytest)" in script
+    assert 'scripts.pytest_performance_evidence "*' in script
+    assert "pytest_command=(python -m pytest)" in script
+    assert 'if "${pytest_command[@]}" tests/integration/ -v --tb=short \\' in script
+
+
 def test_auth_acceptance_explicitly_selects_live_ado_nodes() -> None:
     """The opt-in auth workflow remains the live PAT acceptance owner."""
     _assert_auth_acceptance_selects_live_ado(load_workflow(AUTH_WORKFLOW))
@@ -141,11 +156,7 @@ def test_auth_acceptance_explicitly_selects_live_ado_nodes() -> None:
 def test_release_ado_secret_mutation_is_rejected() -> None:
     """Adding the expiring ADO PAT back to publication must fail the contract."""
     workflow = deepcopy(load_workflow(RELEASE_WORKFLOW))
-    step = workflow_step(
-        workflow_job(workflow, "integration-tests"),
-        "Run integration tests (Unix)",
-    )
-    step["env"]["ADO_APM_PAT"] = "secret"
+    workflow_job(workflow, "integration-tests-shard")["secrets"]["ADO_APM_PAT"] = "secret"
 
     with pytest.raises(AssertionError):
         _assert_release_excludes_live_ado(workflow)
@@ -154,11 +165,7 @@ def test_release_ado_secret_mutation_is_rejected() -> None:
 def test_release_live_selector_mutation_is_rejected() -> None:
     """Publication cannot silently regain live external-service nodes."""
     workflow = deepcopy(load_workflow(RELEASE_WORKFLOW))
-    step = workflow_step(
-        workflow_job(workflow, "integration-tests"),
-        "Run integration tests (Unix)",
-    )
-    step["env"]["PYTEST_MARK_EXPR"] = "live"
+    workflow_job(workflow, "integration-tests-shard")["with"]["integration-markers"] = "live"
 
     with pytest.raises(AssertionError):
         _assert_release_excludes_live_ado(workflow)

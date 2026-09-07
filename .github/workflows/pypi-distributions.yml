@@ -1,0 +1,59 @@
+name: Build PyPI Distributions
+
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        description: 'Name for the uploaded Python distribution artifact.'
+        required: false
+        type: string
+        default: pypi-distributions
+      upload_artifact:
+        description: 'Upload the built distributions for a later publisher job.'
+        required: false
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      artifact_name:
+        description: 'Name for the uploaded Python distribution artifact.'
+        required: false
+        type: string
+        default: pypi-distributions
+      upload_artifact:
+        description: 'Upload the built distributions for read-only timing.'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build PyPI Distributions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - name: Install locked build dependencies
+        run: uv sync --frozen --extra dev
+      - name: Build Python package
+        run: uv build --no-build-isolation --no-sources
+      - name: Upload Python distributions
+        if: inputs.upload_artifact != false
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name || 'pypi-distributions' }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          compression-level: 0
+          if-no-files-found: error

@@ -4,6 +4,9 @@
     "platform": "linux",
     "binary_name": "apm-linux-x86_64",
     "integration_markers": "not live",
+    "integration_shard_count": 1,
+    "integration_xdist_workers": 4,
+    "integration_splitting_algorithm": "duration_based_chunks",
     "on_main": true
   },
   {
@@ -11,6 +14,9 @@
     "platform": "linux",
     "binary_name": "apm-linux-arm64",
     "integration_markers": "not live",
+    "integration_shard_count": 1,
+    "integration_xdist_workers": 4,
+    "integration_splitting_algorithm": "duration_based_chunks",
     "on_main": true
   },
   {
@@ -18,6 +24,9 @@
     "platform": "windows",
     "binary_name": "apm-windows-x86_64",
     "integration_markers": "not live",
+    "integration_shard_count": 1,
+    "integration_xdist_workers": 4,
+    "integration_splitting_algorithm": "duration_based_chunks",
     "on_main": true
   },
   {
@@ -25,6 +34,9 @@
     "platform": "darwin",
     "binary_name": "apm-darwin-x86_64",
     "integration_markers": "lifecycle_smoke and not live",
+    "integration_shard_count": 1,
+    "integration_xdist_workers": 4,
+    "integration_splitting_algorithm": "duration_based_chunks",
     "on_main": true
   },
   {
@@ -32,6 +44,9 @@
     "platform": "darwin",
     "binary_name": "apm-darwin-arm64",
     "integration_markers": "not live",
+    "integration_shard_count": 2,
+    "integration_xdist_workers": 2,
+    "integration_splitting_algorithm": "least_duration",
     "on_main": false
   }
 ]
