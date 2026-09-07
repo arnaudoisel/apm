@@ -203,22 +203,26 @@ class DeploymentReconciler:
 
     @staticmethod
     def merge_aggregate_records(
-        previous: dict[str, DeploymentRecord],
-        current: Mapping[str, DeploymentRecord],
+        batches: Iterable[Mapping[str, DeploymentRecord]],
         shared_paths: frozenset[str],
     ) -> dict[str, DeploymentRecord]:
-        """Accumulate current-run aggregate proofs without changing ordinary handoffs."""
-        records = previous
-        for key, record in current.items():
-            prior = records.get(key)
-            if prior is not None and record.locator.value in shared_paths:
-                record = DeploymentRecord(
-                    locator=record.locator,
-                    owners=tuple(dict.fromkeys((*prior.owners, *record.owners))),
-                    active_owner=record.active_owner,
-                    content_hash=record.content_hash,
-                )
-            records[key] = record
+        """Collect ordered aggregate owners, freezing each final record only once."""
+        records: dict[str, DeploymentRecord] = {}
+        aggregate_owners: dict[str, dict[str, None]] = {}
+        for batch in batches:
+            for key, record in batch.items():
+                if record.locator.value in shared_paths:
+                    owners = aggregate_owners.setdefault(key, {})
+                    owners.update(dict.fromkeys(record.owners))
+                records[key] = record
+        for key, owners in aggregate_owners.items():
+            record = records[key]
+            records[key] = DeploymentRecord(
+                locator=record.locator,
+                owners=tuple(owners),
+                active_owner=record.active_owner,
+                content_hash=record.content_hash,
+            )
         return records
 
     def reconcile(

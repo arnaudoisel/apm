@@ -1080,11 +1080,26 @@ class IntegrationCleanupOutcome:
     deployed_files: dict[str, list[str]]
     failed_paths: list[str]
     error_count: int
+    removed_paths: frozenset[str] = frozenset()
 
     @property
     def complete(self) -> bool:
         """Return whether every integration cleanup operation succeeded."""
         return self.error_count == 0
+
+
+class AggregateIntegrationError(RuntimeError):
+    """Safe public aggregate failure facts, without raw source exception text."""
+
+    def __init__(self, phase: str, paths: frozenset[str]) -> None:
+        self.phase = phase
+        self.paths = paths
+        cause = (
+            "managed content changed or could not be safely removed"
+            if phase == "cleanup"
+            else "source validation or integration failed"
+        )
+        super().__init__(f"Instruction aggregate {phase} failed: {cause}.")
 
 
 def _native_hook_state_exists(project_root: Path, targets: list[object]) -> bool:
@@ -1228,6 +1243,7 @@ def _sync_integrations_after_uninstall(
 
     counts = {entry.counter_key: 0 for entry in _dispatch.values()}
     package_deployed_files: dict[str, list[str]] = {}
+    removed_aggregate_paths: set[str] = set()
 
     # Phase 1: Remove all APM-deployed files
     # Per-target sync for primitives with sync_for_target
@@ -1264,12 +1280,11 @@ def _sync_integrations_after_uninstall(
                 **sync_options,
             )
             counts[_entry.counter_key] += result.get("files_removed", 0)
+            if aggregate_sync:
+                removed_aggregate_paths.update(result.get("removed_paths", ()))
             if aggregate_sync and result.get("errors", 0):
                 logger.render_summary()
-                raise RuntimeError(
-                    "Instruction aggregate cleanup was refused. "
-                    "Restore the managed file or repair its path, then run 'apm install'."
-                )
+                raise AggregateIntegrationError("cleanup", aggregate_rebuilds)
 
     # Skills (multi-target, handled by SkillIntegrator)
     # Check both target root_dir and deploy_root for skill directories
@@ -1428,6 +1443,7 @@ def _sync_integrations_after_uninstall(
                 allow_executables=_allow_executables,
                 trust_bin=False,
                 bin_skip_reason_override="not_retrusted_on_uninstall",
+                show_force_hint=False,
             )
             deployed_files.extend(integration_result["deployed_files"])
         except Exception as exc:
@@ -1466,6 +1482,7 @@ def _sync_integrations_after_uninstall(
             diagnostics=reintegration_diagnostics,
             logger=logger,
             scope=_rebuild_scope,
+            show_force_hint=False,
         )
         package_deployed_files["."] = root_result["deployed_files"]
 
@@ -1478,15 +1495,13 @@ def _sync_integrations_after_uninstall(
             InstallResult(diagnostics=reintegration_diagnostics), force=False
         )
         if reintegration_errors or rebuild_result.exit_code:
-            raise RuntimeError(
-                "Instruction aggregate rebuild failed. "
-                "Resolve the reported source errors, then run 'apm install'."
-            )
+            raise AggregateIntegrationError("rebuild", aggregate_rebuilds)
     return IntegrationCleanupOutcome(
         counts=counts,
         deployed_files=package_deployed_files,
         failed_paths=failed_hook_paths,
         error_count=result.get("errors", 0),
+        removed_paths=frozenset(removed_aggregate_paths),
     )
 
 

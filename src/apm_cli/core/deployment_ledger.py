@@ -303,6 +303,17 @@ class DeploymentLedgerCodec:
             dependency.deployed_file_hashes = dict(sorted(dependency_hashes[owner].items()))
         lockfile.local_deployed_files = sorted(dict.fromkeys(local_files))
         lockfile.local_deployed_file_hashes = dict(sorted(local_hashes.items()))
+        # LockFile.read synthesizes "." from the local compatibility view.
+        # Keep that existing virtual view in step with the authoritative
+        # projection; it must not keep an otherwise empty lockfile alive.
+        if "." in lockfile.dependencies:
+            if local_files:
+                lockfile.dependencies["."].deployed_files = list(lockfile.local_deployed_files)
+                lockfile.dependencies["."].deployed_file_hashes = dict(
+                    lockfile.local_deployed_file_hashes
+                )
+            else:
+                del lockfile.dependencies["."]
         lockfile.mcp_target_servers = {
             runtime: sorted(dict.fromkeys(servers))
             for runtime, servers in sorted(service_targets["mcp"].items())

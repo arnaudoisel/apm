@@ -47,6 +47,31 @@ def test_copilot_aggregate_routes_are_registered_and_satisfied() -> None:
             "rebuild_result = finalize_install_result(",
             "rebuild_result = parallel_outcome(",
         ),
+        (
+            "src/apm_cli/commands/uninstall/cli.py",
+            "removed_paths=(",
+            "discarded_removed_paths=(",
+        ),
+        (
+            "src/apm_cli/commands/uninstall/engine.py",
+            "removed_paths=frozenset(removed_aggregate_paths)",
+            "removed_paths=frozenset()",
+        ),
+        (
+            "src/apm_cli/commands/uninstall/lockfile_state.py",
+            "status=MaterializationStatus.REMOVED",
+            "status=MaterializationStatus.SKIPPED",
+        ),
+        (
+            "src/apm_cli/install/sources.py",
+            "restore_installed_package_source(cached_package, dep_ref)",
+            "parallel_source(cached_package, dep_ref)",
+        ),
+        (
+            "src/apm_cli/install/phases/lockfile.py",
+            "current_aggregates = InstructionIntegrator.aggregate_paths(",
+            "current_aggregates = parallel_aggregate_paths(",
+        ),
     ],
 )
 def test_copilot_aggregate_guard_rejects_bypassed_owner(path: str, old: str, new: str) -> None:

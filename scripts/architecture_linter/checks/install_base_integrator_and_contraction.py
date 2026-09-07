@@ -51,6 +51,11 @@ def check_copilot_aggregate(provider: FactsProvider) -> tuple[Violation, ...]:
             {"aggregate_paths", "reconcile_package_claims", "merge_aggregate_records"},
         ),
         (
+            "src/apm_cli/install/phases/lockfile.py",
+            "_preserve_existing_local_state",
+            {"aggregate_paths", "replace_legacy_owner"},
+        ),
+        (
             "src/apm_cli/commands/uninstall/engine.py",
             "_sync_integrations_after_uninstall",
             {
@@ -69,7 +74,27 @@ def check_copilot_aggregate(provider: FactsProvider) -> tuple[Violation, ...]:
         (
             "src/apm_cli/models/apm_package.py",
             "build_installed_package_info",
+            {"restore_installed_package_source"},
+        ),
+        (
+            "src/apm_cli/models/apm_package.py",
+            "restore_installed_package_source",
             {"to_github_url"},
+        ),
+        (
+            "src/apm_cli/install/sources.py",
+            "acquire",
+            {"restore_installed_package_source"},
+        ),
+        (
+            "src/apm_cli/commands/uninstall/cli.py",
+            "uninstall",
+            {"reconcile_uninstall_deployment_state"},
+        ),
+        (
+            "src/apm_cli/commands/uninstall/lockfile_state.py",
+            "reconcile_uninstall_deployment_state",
+            {"MaterializationResult", "reconcile", "apply_to_lockfile"},
         ),
     )
     findings = []
@@ -95,6 +120,60 @@ def check_copilot_aggregate(provider: FactsProvider) -> tuple[Violation, ...]:
                     _GUARD_COPILOT_AGGREGATE,
                     path,
                     f"{function} must route aggregate decisions through: {', '.join(sorted(missing))}",
+                )
+            )
+    # Successful cleanup facts must cross both adapters, not merely coexist
+    # with calls to the owner. Use the shared index (no second parse/walk).
+    forwardings = (
+        (
+            "src/apm_cli/commands/uninstall/engine.py",
+            "IntegrationCleanupOutcome",
+            "removed_aggregate_paths",
+        ),
+        (
+            "src/apm_cli/commands/uninstall/cli.py",
+            "reconcile_uninstall_deployment_state",
+            "integration_cleanup",
+        ),
+    )
+    for path, callee, source in forwardings:
+        index = provider.tree_index(path)
+        if index is None or index.root is None:
+            continue
+        forwarded = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == callee
+            and any(
+                keyword.arg == "removed_paths" and source in _loaded_names(index, keyword.value)
+                for keyword in node.keywords
+            )
+            for node in index.walk(index.root)
+        )
+        if not forwarded:
+            findings.append(
+                _summary(
+                    _GUARD_COPILOT_AGGREGATE,
+                    path,
+                    f"{callee} must forward confirmed removed_paths from {source}",
+                )
+            )
+    path = "src/apm_cli/commands/uninstall/lockfile_state.py"
+    index = provider.tree_index(path)
+    if index is not None and index.root is not None:
+        removed_proof = any(
+            isinstance(node, ast.Attribute)
+            and node.attr == "REMOVED"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "MaterializationStatus"
+            for node in index.walk(index.root)
+        )
+        if not removed_proof:
+            findings.append(
+                _summary(
+                    _GUARD_COPILOT_AGGREGATE,
+                    path,
+                    "Confirmed cleanup must supply canonical MaterializationStatus.REMOVED evidence",
                 )
             )
     return tuple(findings)

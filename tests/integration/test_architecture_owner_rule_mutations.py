@@ -1204,3 +1204,44 @@ def test_owner_rule_catches_its_guard_mutation(
         f"({case.intent}) -- the guard has no teeth for this owner. "
         f"failures={[(f.stage, f.message) for f in report.failures]}"
     )
+
+
+@pytest.mark.parametrize(
+    ("path", "old", "new"),
+    [
+        (
+            "src/apm_cli/deps/git_auth_env.py",
+            "get_apm_temp_dir(create_config=False)",
+            "get_apm_temp_dir()",
+        ),
+        (
+            "src/apm_cli/config.py",
+            "get_temp_dir(create_config=create_config)",
+            "get_temp_dir()",
+        ),
+        (
+            "src/apm_cli/config.py",
+            'get_config(create=create_config).get("temp_dir")',
+            'get_config().get("temp_dir")',
+        ),
+    ],
+    ids=["sentinel-owner-route", "temp-owner-forwarding", "config-owner-forwarding"],
+)
+def test_auth_guard_requires_noncreating_sentinel_config_reads(
+    path: str, old: str, new: str
+) -> None:
+    """Reject a bootstrap bypass at each edge of the existing temp-config owner."""
+    rule_id = "transport-platform-host-credential-resolution"
+    baseline = run_selected_rules(ROOT, (rule_id,))
+    assert baseline.failures == ()
+    assert baseline.violations == ()
+    source = _source(path)
+    assert source.count(old) == 1
+    mutated = source.replace(old, new, 1)
+    ast.parse(mutated, filename=path)
+
+    report = run_selected_rules(ROOT, (rule_id,), source_overrides={path: mutated})
+
+    assert report.failures == ()
+    assert {finding.rule_id for finding in report.violations} == {rule_id}
+    assert {finding.path for finding in report.violations} == {path}

@@ -41,6 +41,13 @@ declaring package's original source directory; see [local-path anchoring](depend
 | `apm cache prune` | Remove Git checkout SHA groups outside the retention window; all full and sparse variants share recency and eviction | `--days N` (default `30`) |
 | `apm deps update [PKGS...]` | Deprecated -- use `apm update` instead (now a strict superset). Update specific packages | `--verbose`, `--force`, `--target` (comma-separated), `--parallel-downloads N`, `-g/--global`, `--legacy-skill-paths` |
 
+`apm uninstall -g PKG` rebuilds APM-managed
+`~/.copilot/copilot-instructions.md` from eligible surviving-package and
+root contributions. If no eligible instruction content remains,
+successful cleanup and lockfile persistence remove the managed aggregate
+and clear its ownership records. By default, APM leaves an unmanaged file
+unchanged without taking ownership.
+
 For `apm install -g --mcp`, mixed target selections warn and skip
 workspace-only runtimes. If no selected target supports user scope, the command
 exits `2` before creating or changing the user manifest, lockfile, or runtime

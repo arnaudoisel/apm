@@ -498,7 +498,7 @@ class InstructionIntegrator(BaseIntegrator):
         *,
         managed_file_hashes: dict[str, str] | None = None,
         diagnostics: DiagnosticCollector | None = None,
-    ) -> dict[str, int]:
+    ) -> dict[str, int | tuple[str, ...]]:
         """Remove APM-managed instruction files for a single *target*."""
         mapping = target.primitives.get("instructions")
         if not mapping:
@@ -522,6 +522,7 @@ class InstructionIntegrator(BaseIntegrator):
             return {
                 "files_removed": len(cleanup.deleted),
                 "errors": len(cleanup.retained),
+                "removed_paths": tuple(cleanup.deleted),
             }
         else:
             prefix = f"{effective_root}/{mapping.subdir}/"

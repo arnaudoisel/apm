@@ -148,13 +148,16 @@ def set_auto_integrate(enabled: bool) -> None:
     update_config({"auto_integrate": enabled})
 
 
-def get_temp_dir() -> str | None:
+def get_temp_dir(*, create_config: bool = True) -> str | None:
     """Get the configured temporary directory.
+
+    Args:
+        create_config: When false, leave missing user configuration absent.
 
     Returns:
         The stored temp_dir config value, or None if not set.
     """
-    return get_config().get("temp_dir")
+    return get_config(create=create_config).get("temp_dir")
 
 
 def set_temp_dir(path: str) -> None:
@@ -660,7 +663,7 @@ def is_registry_default(name: str) -> bool:
     return bool(cfg and cfg.get("default") is True)
 
 
-def get_apm_temp_dir() -> str | None:
+def get_apm_temp_dir(*, create_config: bool = True) -> str | None:
     """Return the effective temporary directory for APM operations.
 
     Resolution order:
@@ -670,13 +673,16 @@ def get_apm_temp_dir() -> str | None:
 
     Empty or whitespace-only values are treated as unset and skipped.
 
+    Args:
+        create_config: When false, leave missing user configuration absent.
+
     Returns:
         Directory path string, or None when the system default should be used.
     """
     env_val = os.environ.get("APM_TEMP_DIR", "").strip()
     if env_val:
         return env_val
-    config_val = (get_temp_dir() or "").strip()
+    config_val = (get_temp_dir(create_config=create_config) or "").strip()
     if config_val:
         return config_val
     return None

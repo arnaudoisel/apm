@@ -722,14 +722,28 @@ def _governed_root_dirs(targets: list[TargetProfile]) -> set[str]:
     return roots
 
 
-def _walk_managed(root: Path, governed_roots: set[str]) -> dict[str, Path]:
-    """Return a mapping of project-relative posix paths to absolute paths."""
+def _walk_managed(
+    root: Path,
+    governed_roots: set[str],
+    *,
+    walked_dirs: set[Path] | None = None,
+) -> dict[str, Path]:
+    """Collect files, visiting each safely covered directory once per comparison."""
+    from apm_cli.utils.path_security import ensure_path_within, has_symlink_component
+
     out: dict[str, Path] = {}
     if not root.exists():
         return out
-    for top in governed_roots:
+    if walked_dirs is None:
+        walked_dirs = set()
+    for top in sorted(governed_roots, key=lambda path: path.rstrip("/").count("/")):
         base = root / top
+        if has_symlink_component(root, base):
+            continue
+        base = ensure_path_within(base, root)
         if not base.exists():
+            continue
+        if base in walked_dirs or any(parent in walked_dirs for parent in base.parents):
             continue
         if base.is_file() and not base.is_symlink():
             out[top] = base
@@ -738,6 +752,9 @@ def _walk_managed(root: Path, governed_roots: set[str]) -> dict[str, Path]:
             if p.is_file() and not p.is_symlink():
                 rel = p.relative_to(root).as_posix()
                 out[rel] = p
+        # Only validated directory walks can suppress descendant enumeration.
+        if base.is_dir():
+            walked_dirs.add(base)
     # AGENTS.md is a flat top-level file in some target layouts.
     agents_md = root / "AGENTS.md"
     if agents_md.is_file() and not agents_md.is_symlink():
@@ -846,7 +863,8 @@ def diff_scratch_against_project(
     project_root = project_root.resolve()
     governed = governed_roots if governed_roots is not None else _governed_root_dirs(targets)
     scratch_files = _walk_managed(scratch_root, governed)
-    project_files = _walk_managed(project_root, governed)
+    walked_dirs: set[Path] = set()
+    project_files = _walk_managed(project_root, governed, walked_dirs=walked_dirs)
     from apm_cli.install.audit_target_roots import claims_for_root
 
     tracked = claims_for_root(
@@ -867,7 +885,7 @@ def diff_scratch_against_project(
     # the old target. Claims widen comparison only, never source replay.
     from apm_cli.utils.path_security import ensure_path_within, has_symlink_component
 
-    for rel in tracked:
+    for rel in sorted(tracked, key=lambda path: path.rstrip("/").count("/")):
         if rel not in project_files:
             candidate = project_root / rel
             if has_symlink_component(project_root, candidate):
@@ -876,7 +894,7 @@ def diff_scratch_against_project(
             if path.is_file():
                 project_files[rel] = path
             elif path.is_dir() and rel not in hashed_files:
-                project_files.update(_walk_managed(project_root, {rel}))
+                project_files.update(_walk_managed(project_root, {rel}, walked_dirs=walked_dirs))
     claimed_prefixes = _claimed_prefixes(tracked, hashed_files, project_files)
     prefix_set = set(claimed_prefixes)
     prefix_owners = {
@@ -884,7 +902,6 @@ def diff_scratch_against_project(
         for path, owner in tracked.items()
         if path.rstrip("/") + "/" in prefix_set
     }
-    owner_prefixes = sorted(prefix_owners, key=len, reverse=True)
     # Hook merge targets are shared with the user and never claimed in
     # deployed_files, so they can never be "unrecorded". Their APM-owned slice
     # is compared through hook_ownership; sidecars remain byte-for-byte owned.
@@ -993,11 +1010,12 @@ def diff_scratch_against_project(
         if rel in scratch_files:
             continue
         owner = tracked.get(rel)
-        if owner is None:
-            owner = next(
-                (prefix_owners[prefix] for prefix in owner_prefixes if rel.startswith(prefix)),
-                None,
-            )
+        # Exact claims win; otherwise probe only the deepest-to-shallowest
+        # parents, O(path depth) rather than scanning every directory claim.
+        parent = rel.rpartition("/")[0]
+        while owner is None and parent:
+            owner = prefix_owners.get(parent + "/")
+            parent = parent.rpartition("/")[0]
         if owner is not None:
             findings.append(
                 DriftFinding(
