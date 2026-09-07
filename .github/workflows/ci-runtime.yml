@@ -76,6 +76,8 @@ jobs:
 
       - name: Run smoke tests
         env:
+          APM_E2E_TESTS: "1"
+          APM_RUN_INTEGRATION_TESTS: "1"
           GITHUB_TOKEN: ${{ secrets.GH_MODELS_PAT }}
           GITHUB_APM_PAT: ${{ secrets.GH_CLI_PAT }}
         run: uv run pytest tests/integration/test_runtime_smoke.py -v

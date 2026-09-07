@@ -23,6 +23,10 @@
 #   EXPECTED_CHECKS   required. Comma-separated list of check-run names to
 #                     wait for. Whitespace around commas is trimmed.
 #                     Example: "Build & Test (Linux),Build (Linux)"
+#                     Only exact-name, exact-SHA GitHub Actions results
+#                     count; colliding latest Actions names fail closed.
+#                     Workflow definitions still form the trust boundary:
+#                     app identity alone does not authenticate a workflow.
 #   EVENT_NAME        optional. The triggering event ('pull_request',
 #                     'merge_group', 'workflow_dispatch'). Used only to
 #                     emit the right recovery instructions on timeout.
@@ -31,8 +35,8 @@
 #   POLL_SEC          optional. Poll interval in seconds. Default: 30.
 #
 # Exit codes:
-#   0  all expected checks completed with success | skipped | neutral
-#   1  at least one expected check completed with a failing conclusion
+#   0  all expected checks completed with success
+#   1  at least one expected check is ambiguous or completed without success
 #   2  at least one expected check never appeared within TIMEOUT_MIN
 #      (THE BUG we catch -- dropped 'pull_request' webhook)
 #   3  at least one expected check appeared but did not complete in time
@@ -95,40 +99,56 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   poll_count=$((poll_count + 1))
   pending_count=0
 
+  # Fetch one paginated snapshot per poll, not one request per check.
+  # This also bounds the cost of rechecking previously successful jobs.
+  payload=$(gh api \
+    -H "Accept: application/vnd.github+json" \
+    --paginate --slurp \
+    "repos/${REPO}/commits/${SHA}/check-runs?filter=latest&per_page=100" \
+    2>/dev/null) || payload='[]'
+
   for i in "${!checks[@]}"; do
     c="${checks[i]}"
-    [ "${check_status[i]}" = "pending" ] || continue
-    pending_count=$((pending_count + 1))
+    # Recheck successful results too: a rerun on the same SHA can replace
+    # an earlier pass while the gate is still waiting for other checks.
+    check_status[i]="pending"
+    check_url[i]=""
 
-    # Filter by check-run name server-side, asking GitHub for only the
-    # latest run per name (avoids client-side sort / pagination races
-    # when a check has been re-run on the same SHA).
-    encoded=$(jq -rn --arg n "$c" '$n|@uri')
-    payload=$(gh api \
-      -H "Accept: application/vnd.github+json" \
-      "repos/${REPO}/commits/${SHA}/check-runs?check_name=${encoded}&filter=latest&per_page=10" \
-      2>/dev/null) || payload='{"check_runs":[]}'
+    # Check identity within the snapshot. Never let another
+    # app's same-named result satisfy a GitHub Actions requirement, or
+    # silently choose a passing result from colliding Actions workflows.
+    candidates=$(echo "$payload" | jq -c --arg name "$c" --arg sha "$SHA" \
+      '[.[] | .check_runs[] | select(
+        .name == $name and .head_sha == $sha and .app.slug == "github-actions"
+      )]' 2>/dev/null) || candidates='[]'
 
-    total=$(echo "$payload" | jq '.check_runs | length' 2>/dev/null || echo 0)
+    total=$(echo "$candidates" | jq 'length' 2>/dev/null || echo 0)
     case "$total" in ''|*[!0-9]*) total=0 ;; esac
 
     if [ "$total" -eq 0 ]; then
+      pending_count=$((pending_count + 1))
       echo "[merge-gate] poll #${poll_count}: '${c}' not yet present"
       continue
     fi
 
-    status=$(echo "$payload" | jq -r '.check_runs | sort_by(.started_at) | reverse | .[0].status')
-    conclusion=$(echo "$payload" | jq -r '.check_runs | sort_by(.started_at) | reverse | .[0].conclusion')
-    url=$(echo "$payload" | jq -r '.check_runs | sort_by(.started_at) | reverse | .[0].html_url')
+    if [ "$total" -gt 1 ]; then
+      echo "::error title=Ambiguous required check::'${c}' has ${total} latest GitHub Actions results. Required check names must be unique."
+      exit 1
+    fi
+
+    status=$(echo "$candidates" | jq -r '.[0].status')
+    conclusion=$(echo "$candidates" | jq -r '.[0].conclusion')
+    url=$(echo "$candidates" | jq -r '.[0].html_url // empty')
     check_url[i]="$url"
 
     if [ "$status" != "completed" ]; then
+      pending_count=$((pending_count + 1))
       echo "[merge-gate] poll #${poll_count}: '${c}' status=${status}"
       continue
     fi
 
     case "$conclusion" in
-      success|skipped|neutral)
+      success)
         check_status[i]="ok"
         echo "[merge-gate] poll #${poll_count}: '${c}' OK (${conclusion})"
         ;;

@@ -1,7 +1,13 @@
-"""Semantic contracts for hosted PR6 platform evidence."""
+"""Semantic contracts for parallel, native, exact-artifact release evidence."""
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import re
+import subprocess
+import zipfile
 from copy import deepcopy
 from pathlib import Path
 
@@ -20,359 +26,420 @@ from tests.workflow_contracts import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".github" / "workflows" / "build-release.yml"
-WINDOWS_RELEASE_VALIDATION = ROOT / "scripts" / "windows" / "test-release-validation.ps1"
-MACOS_VERSION_TEST_ID = (
-    "tests/integration/test_core_smoke.py::TestBinaryStartup::test_apm_version_runs"
+WORKFLOW = ROOT / ".github/workflows/release-platform.yml"
+RELEASE_WORKFLOW = ROOT / ".github/workflows/build-release.yml"
+UNIX_TIMEOUT = "${{ inputs.integration-markers == 'lifecycle_smoke and not live' && 30 || 60 }}"
+UNIX_ARGS = (
+    "-n 4 --dist loadgroup --durations=50 --store-durations --junitxml=test-results/integration.xml"
 )
-MACOS_RICH_TABLE_TEST_ID = (
-    "tests/integration/test_core_smoke.py::TestBinaryStartup::test_apm_rich_table_runs"
-)
-WINDOWS_TEST_ID = "tests/integration/test_windows_installer_launchers.py"
-MACOS_STARTUP_CONTRACTS = (
-    (
-        "build-and-validate-macos-intel",
-        "macos-15-intel",
-        "${{ github.workspace }}/dist/apm-darwin-x86_64/apm",
-        None,
-    ),
-    (
-        "build-and-validate-macos-arm",
-        "macos-latest",
-        "${{ github.workspace }}/dist/apm-darwin-arm64/apm",
-        "github.ref_type == 'tag' || github.event_name == 'schedule' || "
-        "github.event_name == 'repository_dispatch'",
-    ),
-)
-NON_LIVE_UNIX_INTEGRATION_STEPS = (
-    ("integration-tests", "Run integration tests (Unix)"),
-    ("build-and-validate-macos-arm", "Run integration tests"),
-)
-NON_LIVE_UNIX_TIMEOUT_MINUTES = {
-    ("integration-tests", "Run integration tests (Unix)"): 60,
-    ("build-and-validate-macos-arm", "Run integration tests"): 60,
-}
-NON_LIVE_UNIX_PYTEST_ARGS = "-n 4 --dist loadgroup"
-NON_LIVE_MARK_EXPRESSION = "not live"
-INTEL_FOCUSED_INTEGRATION_STEP = "Run focused Intel integration tests"
-INTEL_FOCUSED_MARK_EXPRESSION = "lifecycle_smoke and not live"
-RUNTIME_SETUP_STEPS = (
-    ("build-and-test", "Run smoke tests"),
-    ("build-and-validate-macos-intel", INTEL_FOCUSED_INTEGRATION_STEP),
-    ("build-and-validate-macos-intel", "Run release validation tests"),
-    ("build-and-validate-macos-arm", "Run integration tests"),
-    ("build-and-validate-macos-arm", "Run release validation tests"),
-    ("integration-tests", "Run integration tests (Unix)"),
-    ("integration-tests", "Run integration tests (Windows)"),
-    ("release-validation", "Run release validation tests (Unix)"),
-    ("release-validation", "Run release validation tests (Windows)"),
-)
+SMOKE = "Test native binary startup and core contracts"
+INSTALLER = "Test install.ps1 end-to-end (Windows)"
 
 
 def _workflow() -> dict:
     return load_workflow(WORKFLOW)
 
 
-def _assert_macos_startup_steps(workflow: dict) -> None:
-    for job_id, runner, binary_path, job_condition in MACOS_STARTUP_CONTRACTS:
-        job = workflow_job(workflow, job_id)
-        step = workflow_step(job, "Test macOS non-shell binary startup")
-        if job_condition is None:
-            assert_unconditional(job, label=f"{job_id} job")
-        else:
-            assert job.get("if") == job_condition
-        assert_unconditional(step, label=f"{job_id} startup step")
-        assert job["runs-on"] == runner
-        assert effective_env(workflow, job, step).get("GITHUB_TOKEN") is None
-        assert step["env"] == {
-            "APM_E2E_TESTS": "1",
-            "APM_BINARY_PATH": binary_path,
-        }
-        tokens = shell_tokens(step)
-        assert tokens[:3] == ["test", "-x", "$APM_BINARY_PATH"]
-        assert_exact_command(
-            shell_commands(step),
-            [
-                "uv",
-                "run",
-                "--frozen",
-                "pytest",
-                MACOS_VERSION_TEST_ID,
-                MACOS_RICH_TABLE_TEST_ID,
-                "-vv",
-                "-ra",
-                "--tb=short",
-            ],
-            label=f"{job_id} startup step",
-        )
-        assert workflow_step_index(job, "Build binary") < workflow_step_index(
-            job,
-            "Test macOS non-shell binary startup",
-        )
-        assert workflow_step_index(
-            job,
-            "Test macOS non-shell binary startup",
-        ) < workflow_step_index(job, "Upload binary as workflow artifact")
-
-
-def _assert_windows_installer_step(workflow: dict) -> None:
-    job = workflow_job(workflow, "build-and-test")
-    step = workflow_step(job, "Test install.ps1 end-to-end (Windows)")
-    assert step.get("if") == "matrix.platform == 'windows'"
-    assert effective_env(workflow, job, step).get("GITHUB_TOKEN") is None
-    assert step["env"] == {"APM_E2E_TESTS": "1"}
-    tokens = shell_tokens(step)
-    assert tokens[:4] == ["uv", "run", "--frozen", "pytest"]
-    assert WINDOWS_TEST_ID in tokens
-    assert "-vv" in tokens
-    assert "-ra" in tokens
-    assert "--tb=short" in tokens
-
-
-def _assert_standalone_integration_timeouts(workflow: dict) -> None:
-    job = workflow_job(workflow, "integration-tests")
-    unix_step = workflow_step(job, "Run integration tests (Unix)")
-    windows_step = workflow_step(job, "Run integration tests (Windows)")
-    assert unix_step.get("timeout-minutes") == 60
-    assert windows_step.get("timeout-minutes") == 20
-
-
-def _assert_non_live_unix_integration_parallelism(workflow: dict) -> None:
-    for job_id, step_name in NON_LIVE_UNIX_INTEGRATION_STEPS:
-        step = workflow_step(workflow_job(workflow, job_id), step_name)
-        assert step["env"].get("PYTEST_MARK_EXPR") == NON_LIVE_MARK_EXPRESSION
-        assert step["env"].get("PYTEST_EXTRA_ARGS") == NON_LIVE_UNIX_PYTEST_ARGS
-        assert step.get("timeout-minutes") == NON_LIVE_UNIX_TIMEOUT_MINUTES[(job_id, step_name)]
-
-
-def _assert_intel_focused_integration(workflow: dict) -> None:
-    job = workflow_job(workflow, "build-and-validate-macos-intel")
-    step = workflow_step(job, INTEL_FOCUSED_INTEGRATION_STEP)
-    assert step.get("if") == (
-        "github.ref_type == 'tag' || github.event_name == 'schedule' || "
-        "github.event_name == 'repository_dispatch'"
+def test_candidate_source_authorities_match_the_real_reusable_workflow() -> None:
+    """Reject invented job names and omitted authorities in promotion evidence."""
+    source = load_workflow(ROOT / ".github/workflows/ci.yml")
+    expected = set()
+    for job_id, job in source["jobs"].items():
+        if job_id == "pr-binary-smoke":
+            continue
+        name = job["name"]
+        shards = job.get("strategy", {}).get("matrix", {}).get("shard", [None])
+        for shard in shards:
+            expected.add(
+                "Candidate Source Checks / " + name.replace("${{ matrix.shard }}", str(shard))
+            )
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            "process.stdout.write(JSON.stringify("
+            "require('./scripts/release-candidate.cjs').REQUIRED_SOURCE_JOB_NAMES));",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
-    assert step["env"].get("PYTEST_MARK_EXPR") == INTEL_FOCUSED_MARK_EXPRESSION
-    assert step["env"].get("PYTEST_EXTRA_ARGS") == NON_LIVE_UNIX_PYTEST_ARGS
-    assert step.get("timeout-minutes") == 30
+    names = json.loads(completed.stdout)
+    assert len(names) == len(set(names))
+    assert set(names) == expected
+
+
+def _execute_native_gate(results: dict, full: bool, platform: str) -> list[str]:
+    gate = workflow_job(_workflow(), "gate")
+    script = workflow_step(gate, "Require every applicable native result")["with"]["script"]
+    harness = (
+        "const failures = [];"
+        "const core = {setFailed: message => failures.push(message)};"
+        f"(new Function('core', {json.dumps(script)}))(core);"
+        "process.stdout.write(JSON.stringify(failures));"
+    )
+    completed = subprocess.run(
+        ["node", "-e", harness],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={
+            **os.environ,
+            "RESULTS": json.dumps(results),
+            "FULL": str(full).lower(),
+            "PLATFORM": platform,
+        },
+    )
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.parametrize(
+    "job_name",
+    ["unit-tests", "build", "integration-tests", "release-validation", "windows-installer"],
+)
+@pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", "neutral", None])
+def test_native_gate_executes_fail_closed_for_each_required_job(
+    job_name: str, result: str | None
+) -> None:
+    gate = workflow_job(_workflow(), "gate")
+    results = {name: {"result": "success"} for name in gate["needs"]}
+    if result is None:
+        del results[job_name]
+    else:
+        results[job_name]["result"] = result
+    assert _execute_native_gate(results, True, "windows") == [f"{job_name} did not succeed"]
+
+
+@pytest.mark.parametrize("full", [False, True])
+@pytest.mark.parametrize("platform", ["linux", "darwin", "windows"])
+def test_native_gate_accepts_only_applicable_successes(full: bool, platform: str) -> None:
+    gate = workflow_job(_workflow(), "gate")
+    results = {name: {"result": "success"} for name in gate["needs"]}
+    if not full:
+        results["integration-tests"]["result"] = "skipped"
+        results["release-validation"]["result"] = "skipped"
+    if platform != "windows":
+        results["windows-installer"]["result"] = "skipped"
+    assert _execute_native_gate(results, full, platform) == []
+
+
+def _assert_native_startup(workflow: dict) -> None:
+    job = workflow_job(workflow, "build")
+    assert_unconditional(job, label="native candidate build")
+    assert job["runs-on"] == "${{ inputs.runner }}"
+    step = workflow_step(job, SMOKE)
+    assert_unconditional(step, label="native artifact smoke")
+    assert effective_env(workflow, job, step).get("GITHUB_TOKEN") is None
+    assert step["env"] == {
+        "PYTHONUTF8": "1",
+        "APM_E2E_TESTS": "1",
+        "APM_BINARY_PATH": (
+            "${{ github.workspace }}/dist/${{ inputs.binary-name }}/"
+            "${{ inputs.platform == 'windows' && 'apm.exe' || 'apm' }}"
+        ),
+    }
     assert_exact_command(
         shell_commands(step),
-        ["uv", "run", "./scripts/test-integration.sh"],
-        label="macOS Intel focused integration step",
+        [
+            "uv",
+            "run",
+            "--frozen",
+            "pytest",
+            "tests/integration/test_core_smoke.py",
+            "-vv",
+            "-ra",
+            "--tb=short",
+            "--junitxml=test-results/core.xml",
+        ],
+        label="native core smoke",
+    )
+    for build in ("Build binary (Unix)", "Build binary (Windows)"):
+        assert workflow_step_index(job, build) < workflow_step_index(job, SMOKE)
+    assert workflow_step_index(job, SMOKE) < workflow_step_index(
+        job, "Package exact candidate archive"
+    )
+    assert workflow_step_index(job, "Package exact candidate archive") < workflow_step_index(
+        job, "Upload binary as workflow artifact"
     )
 
 
-def test_macos_jobs_run_non_shell_binary_startup_after_build() -> None:
-    """Both macOS jobs execute the exact generated artifact before upload."""
-    _assert_macos_startup_steps(_workflow())
+def _assert_windows_installer(workflow: dict) -> None:
+    job = workflow_job(workflow, "windows-installer")
+    assert job["needs"] == ["build"]
+    assert job["if"] == "inputs.platform == 'windows'"
+    step = workflow_step(job, INSTALLER)
+    env = effective_env(workflow, job, step)
+    assert env.get("GITHUB_TOKEN") is None
+    assert env.get("GH_TOKEN") is None
+    assert step["env"]["APM_E2E_TESTS"] == "1"
+    assert step["env"]["APM_CANDIDATE_ARCHIVE"] == (
+        "${{ github.workspace }}/release-assets/apm-windows-x86_64.zip"
+    )
+    assert step["env"]["APM_BASELINE_ARCHIVE"] == (
+        "${{ github.workspace }}/installer-baseline/apm-windows-x86_64.zip"
+    )
+    assert env["APM_BASELINE_VERSION"] == "v0.28.0"
+    assert "APM_CANDIDATE_VERSION" in step["run"]
+    assert "APM_CANDIDATE_SHA256" in step["run"]
+    baseline = workflow_step(job, "Download historical upgrade source once")
+    assert baseline["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    assert "gh release download $env:APM_BASELINE_VERSION" in baseline["run"]
+    assert "if ($actual -ne $expected)" in baseline["run"]
+    assert workflow_step_index(job, "Download historical upgrade source once") < (
+        workflow_step_index(job, INSTALLER)
+    )
+    assert_exact_command(
+        shell_commands(step),
+        [
+            "uv",
+            "run",
+            "--frozen",
+            "pytest",
+            "tests/integration/test_windows_installer_launchers.py",
+            "-vv",
+            "-ra",
+            "--tb=short",
+            "--junitxml=test-results/installer.xml",
+        ],
+        label="candidate Windows installer",
+    )
 
 
-def test_windows_installer_contract_is_windows_only_and_tokenless() -> None:
-    """The Windows E2E has exact gating and no effective repository token."""
-    _assert_windows_installer_step(_workflow())
+def test_installer_workflow_inputs_reach_the_actual_candidate_reader(tmp_path: Path) -> None:
+    """Catch producer/consumer naming drift, not just two independent string checks."""
+    from tests.utils.windows_installer_candidate import EXECUTABLE_MEMBER, InstallerArchive
 
-
-def test_standalone_integration_timeouts_are_platform_specific() -> None:
-    """Standalone Unix has headroom while Windows retains its proven bound."""
-    _assert_standalone_integration_timeouts(_workflow())
-
-
-def test_linux_and_arm_retain_non_live_corpus_grouped_parallelism() -> None:
-    """Linux and macOS ARM keep the bounded non-live integration corpus."""
-    _assert_non_live_unix_integration_parallelism(_workflow())
-
-
-def test_intel_integration_is_marker_scoped_and_bounded() -> None:
-    """Intel keeps focused native coverage without replaying the full corpus."""
-    _assert_intel_focused_integration(_workflow())
-
-
-@pytest.mark.parametrize(("job_id", "step_name"), RUNTIME_SETUP_STEPS)
-def test_runtime_setup_uses_builtin_github_api_token(
-    job_id: str,
-    step_name: str,
-) -> None:
-    """Public runtime metadata must not use the private-module PAT."""
+    archive = tmp_path / "candidate.zip"
+    with zipfile.ZipFile(archive, "w") as target:
+        target.writestr(EXECUTABLE_MEMBER, b"candidate")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     workflow = _workflow()
-    step = workflow_step(workflow_job(workflow, job_id), step_name)
-    assert step["env"]["GITHUB_API_TOKEN"] == "${{ github.token }}"
-    assert step["env"]["GITHUB_APM_PAT"] == "${{ secrets.GH_CLI_PAT }}"
+    job = workflow_job(workflow, "windows-installer")
+    step = workflow_step(job, INSTALLER)
+    environment = dict(effective_env(workflow, job, step))
+    for name in environment:
+        if "CANDIDATE" in name and name.endswith("_ARCHIVE"):
+            environment[name] = str(archive)
+    for name in re.findall(r"\$env:(APM_[A-Z0-9_]+)\s*=", step["run"]):
+        if name.endswith("_VERSION"):
+            environment[name] = "v9.8.7"
+        elif name.endswith("_SHA256"):
+            environment[name] = digest
+    candidate = InstallerArchive.from_environment(environment, "CANDIDATE")
+    assert candidate.sha256 == digest
+    assert candidate.version == "v9.8.7"
 
 
-def test_release_validation_keeps_live_inference_decoupled() -> None:
-    """Release gates install runtimes but do not invoke paid live inference."""
+def _assert_parallel_paths(workflow: dict) -> None:
+    for name in ("unit-tests", "build"):
+        assert "needs" not in workflow_job(workflow, name)
+    for name in ("integration-tests", "release-validation", "windows-installer"):
+        assert workflow_job(workflow, name)["needs"] == ["build"]
+    gate = workflow_job(workflow, "gate")
+    assert gate["if"] == "always()"
+    assert set(gate["needs"]) == {
+        "unit-tests",
+        "build",
+        "integration-tests",
+        "release-validation",
+        "windows-installer",
+    }
+    step = workflow_step(gate, "Require every applicable native result")
+    assert step["env"]["RESULTS"] == "${{ toJSON(needs) }}"
+    assert "results[name]?.result !== 'success'" in step["with"]["script"]
+    assert "core.setFailed" in step["with"]["script"]
+
+
+def _assert_integration(workflow: dict) -> None:
+    job = workflow_job(workflow, "integration-tests")
+    unix = workflow_step(job, "Run integration tests (Unix)")
+    assert unix["env"]["PYTEST_MARK_EXPR"] == "${{ inputs.integration-markers }}"
+    assert unix["env"]["PYTEST_EXTRA_ARGS"] == UNIX_ARGS
+    assert unix["timeout-minutes"] == UNIX_TIMEOUT
+    assert unix["env"]["APM_BINARY_PATH"] == (
+        "${{ github.workspace }}/dist/${{ inputs.binary-name }}/apm"
+    )
+    windows = workflow_step(job, "Run integration tests (Windows)")
+    assert windows["timeout-minutes"] == 20
+    assert windows["env"]["APM_BINARY_PATH"].endswith("/apm.exe")
+    for step in (unix, windows):
+        assert step["env"]["GITHUB_API_TOKEN"] == "${{ github.token }}"
+        assert step["env"]["GITHUB_APM_PAT"] == "${{ secrets.GH_CLI_PAT }}"
+        assert "APM_RUN_INFERENCE_TESTS" not in effective_env(workflow, job, step)
+    assert "-IncludeLiveADO" not in shell_tokens(windows)
+
+
+def test_native_startup_runs_exact_frozen_candidate_before_packaging() -> None:
+    _assert_native_startup(_workflow())
+
+
+def test_windows_installer_is_candidate_bound_and_tokenless() -> None:
+    _assert_windows_installer(_workflow())
+
+
+def test_native_jobs_have_no_unit_or_cross_platform_barriers() -> None:
+    _assert_parallel_paths(_workflow())
+
+
+def test_native_integration_preserves_grouping_bounds_and_artifact_identity() -> None:
+    _assert_integration(_workflow())
+
+
+def test_platform_catalog_retains_all_native_and_non_live_selections() -> None:
+    catalog = json.loads((ROOT / "scripts/release-platforms.json").read_text("ascii"))
+    rows = {row["binary_name"]: row for row in catalog}
+    assert len(rows) == len(catalog) == 5
+    assert {name: row["runner"] for name, row in rows.items()} == {
+        "apm-linux-x86_64": "ubuntu-24.04",
+        "apm-linux-arm64": "ubuntu-24.04-arm",
+        "apm-darwin-x86_64": "macos-15-intel",
+        "apm-darwin-arm64": "macos-latest",
+        "apm-windows-x86_64": "windows-latest",
+    }
+    assert rows["apm-darwin-x86_64"]["integration_markers"] == "lifecycle_smoke and not live"
+    assert all(
+        row["integration_markers"] == "not live"
+        for name, row in rows.items()
+        if name != "apm-darwin-x86_64"
+    )
+    assert {name for name, row in rows.items() if not row["on_main"]} == {"apm-darwin-arm64"}
+
+
+def test_isolated_validation_has_no_checkout_and_uses_checked_archive() -> None:
     workflow = _workflow()
     job = workflow_job(workflow, "release-validation")
-    for step_name in (
-        "Run release validation tests (Unix)",
-        "Run release validation tests (Windows)",
-    ):
-        env = effective_env(workflow, job, workflow_step(job, step_name))
-        assert "APM_RUN_INFERENCE_TESTS" not in env
+    assert all("actions/checkout" not in step.get("uses", "") for step in job["steps"])
+    unpack = workflow_step(job, "Extract checked candidate archive")
+    assert "verify-extract" in shell_tokens(unpack)
+    for name in ("Run release validation tests (Unix)", "Run release validation tests (Windows)"):
+        step = workflow_step(job, name)
+        assert step["timeout-minutes"] == 20
+        env = effective_env(workflow, job, step)
         assert "GITHUB_TOKEN" not in env
-
-    script = WINDOWS_RELEASE_VALIDATION.read_text(encoding="utf-8")
-    assert script.count('$env:APM_RUN_INFERENCE_TESTS -eq "1"') >= 2
-    assert '$env:APM_RUN_INFERENCE_TESTS -ne "1"' in script
-    assert "$testsTotal = 4" in script
-    assert "$env:GITHUB_APM_PAT -or $env:GITHUB_TOKEN" in script
+        assert "APM_RUN_INFERENCE_TESTS" not in env
 
 
-@pytest.mark.parametrize(
-    ("job_id", "step_name"),
-    NON_LIVE_UNIX_INTEGRATION_STEPS,
-)
-def test_non_live_unix_serial_integration_mutation_is_rejected(
-    job_id: str,
-    step_name: str,
-) -> None:
-    """No non-live release node can silently regress to the serial path."""
+@pytest.mark.parametrize("job", ["unit-tests", "build"])
+def test_unit_build_dependency_mutation_is_rejected(job: str) -> None:
     workflow = deepcopy(_workflow())
-    step = workflow_step(workflow_job(workflow, job_id), step_name)
-    del step["env"]["PYTEST_EXTRA_ARGS"]
-
+    workflow_job(workflow, job)["needs"] = ["another-platform"]
     with pytest.raises(AssertionError):
-        _assert_non_live_unix_integration_parallelism(workflow)
+        _assert_parallel_paths(workflow)
 
 
-@pytest.mark.parametrize(
-    ("job_id", "step_name"),
-    NON_LIVE_UNIX_INTEGRATION_STEPS,
-)
-def test_non_live_unix_timeout_mutation_is_rejected(
-    job_id: str,
-    step_name: str,
-) -> None:
-    """Every non-live Unix release node retains its measured timeout bound."""
+@pytest.mark.parametrize("job", ["integration-tests", "release-validation", "windows-installer"])
+def test_reintroduced_barrier_is_rejected(job: str) -> None:
     workflow = deepcopy(_workflow())
-    step = workflow_step(workflow_job(workflow, job_id), step_name)
-    step["timeout-minutes"] = NON_LIVE_UNIX_TIMEOUT_MINUTES[(job_id, step_name)] + 1
-
+    workflow_job(workflow, job)["needs"].append("unit-tests")
     with pytest.raises(AssertionError):
-        _assert_non_live_unix_integration_parallelism(workflow)
+        _assert_parallel_paths(workflow)
 
 
-def test_intel_non_live_corpus_mutation_is_rejected() -> None:
-    """Intel cannot silently regain the redundant non-live corpus."""
+@pytest.mark.parametrize("scope", ["workflow", "job", "step"])
+@pytest.mark.parametrize("contract", ["smoke", "installer"])
+def test_native_token_scope_mutations_are_rejected(scope: str, contract: str) -> None:
     workflow = deepcopy(_workflow())
-    step = workflow_step(
-        workflow_job(workflow, "build-and-validate-macos-intel"),
-        INTEL_FOCUSED_INTEGRATION_STEP,
-    )
-    step["env"]["PYTEST_MARK_EXPR"] = NON_LIVE_MARK_EXPRESSION
-
-    with pytest.raises(AssertionError):
-        _assert_intel_focused_integration(workflow)
-
-
-def test_arm_focused_subset_mutation_is_rejected() -> None:
-    """ARM remains the broad non-live macOS release authority."""
-    workflow = deepcopy(_workflow())
-    step = workflow_step(
-        workflow_job(workflow, "build-and-validate-macos-arm"),
-        "Run integration tests",
-    )
-    step["env"]["PYTEST_MARK_EXPR"] = INTEL_FOCUSED_MARK_EXPRESSION
-
-    with pytest.raises(AssertionError):
-        _assert_non_live_unix_integration_parallelism(workflow)
-
-
-def test_unix_integration_twenty_minute_timeout_mutation_is_rejected() -> None:
-    """The prior Unix timeout cannot satisfy the packaged timing contract."""
-    workflow = deepcopy(_workflow())
-    unix_step = workflow_step(
-        workflow_job(workflow, "integration-tests"),
-        "Run integration tests (Unix)",
-    )
-    unix_step["timeout-minutes"] = 20
-
-    with pytest.raises(AssertionError):
-        _assert_standalone_integration_timeouts(workflow)
-
-
-def test_missing_unix_integration_timeout_mutation_is_rejected() -> None:
-    """Removing the Unix timeout cannot silently make the step unbounded."""
-    workflow = deepcopy(_workflow())
-    unix_step = workflow_step(
-        workflow_job(workflow, "integration-tests"),
-        "Run integration tests (Unix)",
-    )
-    del unix_step["timeout-minutes"]
-
-    with pytest.raises(AssertionError):
-        _assert_standalone_integration_timeouts(workflow)
-
-
-@pytest.mark.parametrize("scope", ("workflow", "job", "step"))
-def test_windows_token_scope_mutations_are_rejected(scope: str) -> None:
-    """A token inherited from any Actions scope must fail the contract."""
-    workflow = deepcopy(_workflow())
-    job = workflow_job(workflow, "build-and-test")
-    step = workflow_step(job, "Test install.ps1 end-to-end (Windows)")
+    job = workflow_job(workflow, "build" if contract == "smoke" else "windows-installer")
+    step = workflow_step(job, SMOKE if contract == "smoke" else INSTALLER)
     {"workflow": workflow, "job": job, "step": step}[scope].setdefault("env", {})[
         "GITHUB_TOKEN"
     ] = "secret"
-
     with pytest.raises(AssertionError):
-        _assert_windows_installer_step(workflow)
+        (_assert_native_startup if contract == "smoke" else _assert_windows_installer)(workflow)
 
 
-@pytest.mark.parametrize("job_id", [contract[0] for contract in MACOS_STARTUP_CONTRACTS])
-@pytest.mark.parametrize("scope", ("workflow", "job", "step"))
-def test_macos_token_scope_mutations_are_rejected(job_id: str, scope: str) -> None:
-    """A token inherited from any Actions scope must fail the macOS contract."""
+@pytest.mark.parametrize("scope", ["job", "step"])
+def test_disabling_native_startup_is_rejected(scope: str) -> None:
     workflow = deepcopy(_workflow())
-    job = workflow_job(workflow, job_id)
-    step = workflow_step(job, "Test macOS non-shell binary startup")
-    {"workflow": workflow, "job": job, "step": step}[scope].setdefault("env", {})[
-        "GITHUB_TOKEN"
-    ] = "secret"
-
+    job = workflow_job(workflow, "build")
+    {"job": job, "step": workflow_step(job, SMOKE)}[scope]["if"] = False
     with pytest.raises(AssertionError):
-        _assert_macos_startup_steps(workflow)
+        _assert_native_startup(workflow)
 
 
-def test_windows_linux_gate_mutation_is_rejected() -> None:
-    """A Linux condition cannot satisfy the Windows-only platform contract."""
+def test_echo_cannot_replace_frozen_smoke() -> None:
     workflow = deepcopy(_workflow())
-    step = workflow_step(
-        workflow_job(workflow, "build-and-test"),
-        "Test install.ps1 end-to-end (Windows)",
-    )
-    step["if"] = "matrix.platform == 'linux'"
-
+    step = workflow_step(workflow_job(workflow, "build"), SMOKE)
+    step["run"] = "echo " + step["run"]
     with pytest.raises(AssertionError):
-        _assert_windows_installer_step(workflow)
+        _assert_native_startup(workflow)
 
 
-@pytest.mark.parametrize("job_id", [contract[0] for contract in MACOS_STARTUP_CONTRACTS])
-@pytest.mark.parametrize("scope", ("job", "step"))
-def test_macos_disabled_mutations_are_rejected(job_id: str, scope: str) -> None:
-    """The macOS startup evidence cannot be disabled at job or step scope."""
-    workflow = deepcopy(_workflow())
-    job = workflow_job(workflow, job_id)
-    step = workflow_step(job, "Test macOS non-shell binary startup")
-    {"job": job, "step": step}[scope]["if"] = False
-
-    with pytest.raises(AssertionError):
-        _assert_macos_startup_steps(workflow)
-
-
-@pytest.mark.parametrize("job_id", [contract[0] for contract in MACOS_STARTUP_CONTRACTS])
-def test_macos_echo_replacement_mutation_is_rejected(job_id: str) -> None:
-    """An echo cannot replace the exact frozen pytest invocation."""
+@pytest.mark.parametrize("field", ["PYTEST_MARK_EXPR", "PYTEST_EXTRA_ARGS", "APM_BINARY_PATH"])
+def test_missing_integration_safety_argument_is_rejected(field: str) -> None:
     workflow = deepcopy(_workflow())
     step = workflow_step(
-        workflow_job(workflow, job_id),
-        "Test macOS non-shell binary startup",
+        workflow_job(workflow, "integration-tests"), "Run integration tests (Unix)"
     )
-    step["run"] = (
-        'test -x "$APM_BINARY_PATH"\n'
-        "echo uv run --frozen pytest "
-        f"{MACOS_VERSION_TEST_ID} {MACOS_RICH_TABLE_TEST_ID} "
-        "-vv -ra --tb=short\n"
-    )
-
+    step["env"][field] = "wrong"
     with pytest.raises(AssertionError):
-        _assert_macos_startup_steps(workflow)
+        _assert_integration(workflow)
+
+
+def test_publication_only_consumes_verified_archives() -> None:
+    workflow = load_workflow(RELEASE_WORKFLOW)
+    publisher = workflow_job(workflow, "create-release")
+    assert publisher["needs"] == ["plan", "verify-candidate"]
+    assert all("run" not in step for step in publisher["steps"])
+    assert all("actions/checkout" not in step.get("uses", "") for step in publisher["steps"])
+    assert workflow_step(publisher, "Create GitHub Release")["with"]["fail_on_unmatched_files"]
+
+
+def test_native_artifacts_and_downloads_are_attempt_scoped() -> None:
+    workflow = _workflow()
+    artifact_name = "candidate-${{ github.run_attempt }}-${{ inputs.binary-name }}"
+    upload = workflow_step(workflow_job(workflow, "build"), "Upload binary as workflow artifact")
+    assert upload["with"]["name"] == artifact_name
+    for name in ("integration-tests", "release-validation", "windows-installer"):
+        downloads = [
+            step
+            for step in workflow_job(workflow, name)["steps"]
+            if step.get("uses", "").startswith("actions/download-artifact@")
+        ]
+        assert len(downloads) == 1
+        assert downloads[0]["with"]["name"] == artifact_name
+
+
+def test_tag_downloads_only_exact_selected_artifact_ids() -> None:
+    workflow = load_workflow(RELEASE_WORKFLOW)
+    verifier = workflow_job(workflow, "verify-candidate")
+    for name in ("Download qualified evidence", "Download exact candidate artifacts"):
+        download = workflow_step(verifier, name)
+        assert "artifact-ids" in download["with"]
+        assert "pattern" not in download["with"]
+        assert "name" not in download["with"]
+        assert workflow_step_index(verifier, "Require exact immutable download identities") < (
+            workflow_step_index(verifier, name)
+        )
+        assert download["with"]["run-id"] == (
+            "${{ needs.plan.outputs.candidate_run_id || github.run_id }}"
+        )
+    qualifier = workflow_job(workflow, "candidate-ready")
+    assert qualifier["outputs"]["candidate_artifact_ids"] == (
+        "${{ steps.qualification.outputs.candidate_artifact_ids }}"
+    )
+    evidence = next(step for step in qualifier["steps"] if step.get("id") == "evidence")
+    assert evidence["with"]["name"] == "release-candidate-evidence-${{ github.run_attempt }}"
+
+
+@pytest.mark.parametrize(
+    ("job_name", "authority"),
+    [
+        ("create-release", "verify-candidate"),
+        ("deploy-docs", "create-release"),
+        ("gh-aw-compat", "create-release"),
+        ("build-pypi-distributions", "create-release"),
+        ("publish-pypi", "build-pypi-distributions"),
+    ],
+)
+def test_warm_release_descendants_require_success_without_skipped_ancestor_poisoning(
+    job_name: str, authority: str
+) -> None:
+    job = workflow_job(load_workflow(RELEASE_WORKFLOW), job_name)
+    assert authority in job["needs"]
+    assert "always()" in job["if"]
+    assert "!cancelled()" in job["if"]
+    assert f"needs.{authority}.result == 'success'" in job["if"]

@@ -1,0 +1,360 @@
+name: Native release candidate
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        required: true
+      platform:
+        type: string
+        required: true
+      binary-name:
+        type: string
+        required: true
+      integration-markers:
+        type: string
+        default: not live
+      full-validation:
+        type: boolean
+        required: true
+    secrets:
+      GH_CLI_PAT:
+        required: false
+      GH_MODELS_PAT:
+        required: false
+      WINDOWS_CERT_PFX:
+        required: false
+      WINDOWS_CERT_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  # Native unit evidence is independent of the frozen artifact. Never put this
+  # in the build's needs list: publication, not compilation, consumes its verdict.
+  unit-tests:
+    name: Unit Tests
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+      - uses: ./.github/actions/pytest-timing
+        with:
+          suite: unit
+      - name: Run unit tests
+        if: inputs.platform != 'windows'
+        env:
+          GITHUB_TOKEN: ${{ inputs.platform == 'linux' && secrets.GH_MODELS_PAT || '' }}
+          GITHUB_APM_PAT: ${{ inputs.platform == 'linux' && secrets.GH_CLI_PAT || '' }}
+        run: >-
+          uv run --frozen pytest tests/unit tests/test_console.py
+          -n auto --dist worksteal --durations=50 --store-durations
+          --junitxml=test-results/unit.xml
+      - name: Run unit tests (Windows diagnostics)
+        if: inputs.platform == 'windows'
+        timeout-minutes: 60
+        env:
+          PYTHONUNBUFFERED: '1'
+          GITHUB_TOKEN: ${{ secrets.GH_MODELS_PAT }}
+          GITHUB_APM_PAT: ${{ secrets.GH_CLI_PAT }}
+        run: >-
+          uv run --frozen pytest tests/unit tests/test_console.py
+          -n auto --dist worksteal --durations=50 --store-durations
+          --junitxml=test-results/unit.xml
+          -vv --tb=short --show-capture=no --no-showlocals
+      - name: Upload unit timings and outcomes
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-${{ inputs.binary-name }}-unit
+          path: |
+            test-results/
+            .test_durations
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+  build:
+    name: Build Candidate
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev --extra build
+      - name: Build binary (Unix)
+        if: inputs.platform != 'windows'
+        run: uv run --frozen bash scripts/build-binary.sh
+      - name: Build binary (Windows)
+        if: inputs.platform == 'windows'
+        run: uv run --frozen pwsh scripts/windows/build-binary.ps1
+      - name: Sign Windows binary (Authenticode)
+        if: inputs.platform == 'windows' && env.WINDOWS_CERT_PFX != ''
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          BINARY_DIR: dist\apm-windows-x86_64
+        run: uv run --frozen pwsh scripts/windows/sign-binary.ps1
+      - name: Test native binary startup and core contracts
+        env:
+          PYTHONUTF8: '1'
+          APM_E2E_TESTS: '1'
+          APM_BINARY_PATH: ${{ github.workspace }}/dist/${{ inputs.binary-name }}/${{ inputs.platform == 'windows' && 'apm.exe' || 'apm' }}
+        run: >-
+          uv run --frozen pytest tests/integration/test_core_smoke.py
+          -vv -ra --tb=short --junitxml=test-results/core.xml
+      - name: Package exact candidate archive
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+          BINARY_NAME: ${{ inputs.binary-name }}
+        shell: bash
+        run: >-
+          python scripts/package_release.py pack
+          --binary-name "$BINARY_NAME" --sha "$CANDIDATE_SHA"
+      - name: Upload binary as workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-${{ github.run_attempt }}-${{ inputs.binary-name }}
+          path: |
+            release-assets/
+            scripts/package_release.py
+            scripts/release-platforms.json
+            scripts/test-release-validation.sh
+            scripts/windows/test-release-validation.ps1
+            scripts/test-dependency-integration.sh
+            scripts/windows/test-dependency-integration.ps1
+            scripts/github-token-helper.sh
+            scripts/windows/github-token-helper.ps1
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+      - name: Upload native smoke outcomes
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-${{ inputs.binary-name }}-core
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 30
+
+  integration-tests:
+    name: Integration Tests
+    needs: [build]
+    if: inputs.full-validation
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: candidate-${{ github.run_attempt }}-${{ inputs.binary-name }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - name: Install Linux shell test runtimes
+        if: inputs.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fish zsh
+      - name: Install macOS shell test runtimes
+        if: inputs.platform == 'darwin'
+        run: |
+          brew list bash >/dev/null 2>&1 || brew install bash
+          brew list fish >/dev/null 2>&1 || brew install fish
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+      - name: Extract checked candidate archive
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+          BINARY_NAME: ${{ inputs.binary-name }}
+        shell: bash
+        run: >-
+          python scripts/package_release.py verify-extract
+          --binary-name "$BINARY_NAME" --sha "$CANDIDATE_SHA"
+      - uses: ./.github/actions/pytest-timing
+        with:
+          suite: integration
+      - name: Run integration tests (Unix)
+        if: inputs.platform != 'windows'
+        timeout-minutes: ${{ inputs.integration-markers == 'lifecycle_smoke and not live' && 30 || 60 }}
+        env:
+          APM_E2E_TESTS: '1'
+          APM_BINARY_PATH: ${{ github.workspace }}/dist/${{ inputs.binary-name }}/apm
+          GITHUB_API_TOKEN: ${{ github.token }}
+          GITHUB_APM_PAT: ${{ secrets.GH_CLI_PAT }}
+          PYTEST_MARK_EXPR: ${{ inputs.integration-markers }}
+          APM_TEST_RUNTIMES: ${{ inputs.integration-markers == 'lifecycle_smoke and not live' && 'none' || 'copilot' }}
+          PYTEST_EXTRA_ARGS: -n 4 --dist loadgroup --durations=50 --store-durations --junitxml=test-results/integration.xml
+        run: uv run --frozen bash scripts/test-integration.sh
+      - name: Run integration tests (Windows)
+        if: inputs.platform == 'windows'
+        timeout-minutes: 20
+        env:
+          APM_E2E_TESTS: '1'
+          APM_BINARY_PATH: ${{ github.workspace }}/dist/${{ inputs.binary-name }}/apm.exe
+          GITHUB_API_TOKEN: ${{ github.token }}
+          GITHUB_APM_PAT: ${{ secrets.GH_CLI_PAT }}
+        run: uv run --frozen pwsh scripts/windows/test-integration.ps1 -SkipBuild
+      - name: Upload integration timings and outcomes
+        if: always() && inputs.platform != 'windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-${{ inputs.binary-name }}-integration
+          path: |
+            test-results/
+            .test_durations
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+  # No checkout or editable package: validate the actual archive on a fresh
+  # native runner, independently of integration and its mutable HOME/caches.
+  release-validation:
+    name: Isolated Release Validation
+    needs: [build]
+    if: inputs.full-validation
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: candidate-${{ github.run_attempt }}-${{ inputs.binary-name }}
+      - name: Extract checked candidate archive
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+          BINARY_NAME: ${{ inputs.binary-name }}
+        shell: bash
+        run: >-
+          python scripts/package_release.py verify-extract
+          --binary-name "$BINARY_NAME" --sha "$CANDIDATE_SHA"
+      - name: Run release validation tests (Unix)
+        if: inputs.platform != 'windows'
+        timeout-minutes: 20
+        env:
+          GITHUB_API_TOKEN: ${{ github.token }}
+          GITHUB_APM_PAT: ${{ secrets.GH_CLI_PAT }}
+          APM_E2E_TESTS: '1'
+          BINARY_NAME: ${{ inputs.binary-name }}
+        run: bash scripts/test-release-validation.sh "$PWD/dist/$BINARY_NAME/apm"
+      - name: Run release validation tests (Windows)
+        if: inputs.platform == 'windows'
+        shell: pwsh
+        timeout-minutes: 20
+        env:
+          GITHUB_API_TOKEN: ${{ github.token }}
+          GITHUB_APM_PAT: ${{ secrets.GH_CLI_PAT }}
+          APM_E2E_TESTS: '1'
+        run: |
+          $env:PATH = "$PWD\dist\apm-windows-x86_64;$env:PATH"
+          .\scripts\windows\test-release-validation.ps1
+
+  windows-installer:
+    name: Candidate Windows Installer
+    needs: [build]
+    if: inputs.platform == 'windows'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 20
+    env:
+      APM_BASELINE_VERSION: v0.28.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: candidate-${{ github.run_attempt }}-${{ inputs.binary-name }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+      - name: Download historical upgrade source once
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download $env:APM_BASELINE_VERSION --repo microsoft/apm `
+            --pattern apm-windows-x86_64.zip --pattern apm-windows-x86_64.zip.sha256 `
+            --dir installer-baseline
+          if ($LASTEXITCODE -ne 0) { throw "Could not download the historical upgrade source" }
+          $sidecar = (Get-Content installer-baseline/apm-windows-x86_64.zip.sha256 -Raw).Trim()
+          if ($sidecar -notmatch '^([a-fA-F0-9]{64})\s+\*?apm-windows-x86_64\.zip$') {
+            throw "Invalid historical upgrade source checksum"
+          }
+          $expected = $Matches[1].ToLowerInvariant()
+          $actual = (Get-FileHash installer-baseline/apm-windows-x86_64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Historical upgrade source checksum mismatch" }
+          "APM_BASELINE_SHA256=$actual" >> $env:GITHUB_ENV
+      - name: Test install.ps1 end-to-end (Windows)
+        shell: pwsh
+        env:
+          APM_E2E_TESTS: '1'
+          APM_CANDIDATE_ARCHIVE: ${{ github.workspace }}/release-assets/apm-windows-x86_64.zip
+          APM_BASELINE_ARCHIVE: ${{ github.workspace }}/installer-baseline/apm-windows-x86_64.zip
+        run: |
+          $candidate = Get-Content release-assets/apm-windows-x86_64.json -Raw | ConvertFrom-Json
+          $env:APM_CANDIDATE_VERSION = "v$($candidate.version)"
+          $env:APM_CANDIDATE_SHA256 = $candidate.archive_sha256
+          uv run --frozen pytest tests/integration/test_windows_installer_launchers.py -vv -ra --tb=short --junitxml=test-results/installer.xml
+      - name: Upload installer outcomes
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-${{ inputs.binary-name }}-installer
+          path: test-results/
+          retention-days: 30
+          if-no-files-found: error
+
+  gate:
+    name: Native Candidate Gate
+    needs: [unit-tests, build, integration-tests, release-validation, windows-installer]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every applicable native result
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          FULL: ${{ inputs.full-validation }}
+          PLATFORM: ${{ inputs.platform }}
+        with:
+          script: |
+            const results = JSON.parse(process.env.RESULTS);
+            const required = ['unit-tests', 'build'];
+            if (process.env.FULL === 'true') required.push('integration-tests', 'release-validation');
+            if (process.env.PLATFORM === 'windows') required.push('windows-installer');
+            for (const name of required) {
+              if (results[name]?.result !== 'success') core.setFailed(`${name} did not succeed`);
+            }

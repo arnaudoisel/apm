@@ -1,0 +1,43 @@
+name: Pytest timing hints
+description: Restore timing hints only; cached data never selects or skips tests.
+inputs:
+  suite:
+    description: Test corpus whose timings are being recorded.
+    required: true
+  partition:
+    description: Distinguish simultaneous writers while sharing restore hints.
+    default: all
+  snapshot:
+    description: Publish one immutable per-run snapshot for downstream shards.
+    default: ''
+runs:
+  using: composite
+  steps:
+    - if: inputs.snapshot == ''
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: .test_durations
+        key: pytest-times-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.suite }}-${{ github.sha }}-${{ inputs.partition }}
+        restore-keys: |
+          pytest-times-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.suite }}-
+    - if: inputs.snapshot != ''
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: .test_durations
+        key: pytest-times-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.suite }}-${{ github.sha }}-all
+        restore-keys: |
+          pytest-times-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.suite }}-
+    - if: inputs.snapshot != ''
+      shell: bash
+      run: |
+        if [ ! -f .test_durations ]; then
+          printf '{}\n' > .test_durations
+        fi
+    - if: inputs.snapshot != ''
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ inputs.snapshot }}
+        path: .test_durations
+        include-hidden-files: true
+        if-no-files-found: error
+        retention-days: 7

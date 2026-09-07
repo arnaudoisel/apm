@@ -4,6 +4,7 @@ env:
   PYTHON_VERSION: '3.12'
 
 on:
+  workflow_call:
   pull_request:
     branches: [ main ]
   # Tier 1 also runs in merge queue context so the same unit + build checks
@@ -224,9 +225,8 @@ jobs:
   # enforces the global 80% floor, just off the PR-time critical path,
   # and is escalated to required on `merge_group`.
   #
-  # First runs use pytest-split's naive file-based split (no .test_durations
-  # committed yet); commit a durations file in a follow-up PR after one
-  # green run to balance shards better.
+  # Record timings without independently restoring mutable shard histories.
+  # All shards must partition the same collection with identical inputs.
   build-and-test-shard:
     name: Build & Test Shard ${{ matrix.shard }} (Linux)
     runs-on: ubuntu-24.04
@@ -253,6 +253,10 @@ jobs:
         packages/apm-contributor-dashboard/tests/logic.test.mjs
         packages/apm-contributor-dashboard/tests/server.test.mjs
 
+    - name: Run release candidate trust tests
+      if: matrix.shard == 1
+      run: node --test scripts/release-candidate.test.cjs
+
     - name: Set up Python
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
@@ -271,6 +275,9 @@ jobs:
     - name: Install dependencies
       run: uv sync --frozen --extra dev
 
+    # Record timings, but do not independently restore a rolling cache here:
+    # different snapshots could assign the same test to neither shard.
+    # Keep PR selection deterministic without adding a runner-allocation gate.
     # --splits 2 --group N matches the layout used by ci-integration.yml.
     # -n 2 --dist worksteal parallelises within the shard.
     #
@@ -285,7 +292,20 @@ jobs:
         uv run pytest tests/unit tests/test_console.py tests/red_team \
           --splits 2 --group ${{ matrix.shard }} \
           -n 2 --dist worksteal \
+          --durations=50 --store-durations --junitxml=test-results/unit.xml \
           --cov --cov-report= --cov-fail-under=60
+
+    - name: Upload test timings and outcomes
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: test-results-unit-shard-${{ matrix.shard }}
+        path: |
+          test-results/
+          .test_durations
+        include-hidden-files: true
+        retention-days: 30
+        if-no-files-found: error
 
     - name: Rename coverage data for shard
       if: always()
@@ -373,6 +393,7 @@ jobs:
   # and in build-release.yml on release.
   pr-binary-smoke:
     name: PR Binary Smoke (Linux)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -392,11 +413,6 @@ jobs:
 
     - name: Install dependencies
       run: uv sync --frozen --extra dev --extra build
-
-    - name: Install UPX
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y upx-ucl
 
     - name: Build binary
       run: |

@@ -15,15 +15,33 @@
 #      end-to-end (download + dispatch + new version reported).
 #
 # Designed to run on the windows-latest GitHub Actions runner. Performs a
-# real install of a pinned APM release into an isolated test prefix and
-# leaves the developer's existing apm install untouched.
+# real install of the current build candidate from a verified loopback fixture.
+# The only historical release is the upgrade SOURCE, never the destination.
+# Invoke via tests/integration/test_windows_installer_launchers.py, which owns
+# archive verification and the fixture server.
 
 param(
-    [string]$PinnedVersion = "v0.29.0",
-    [string]$OlderVersion  = "v0.28.0"
+    [Parameter(Mandatory = $true)][string]$CandidateVersion,
+    [Parameter(Mandatory = $true)][string]$OlderVersion,
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-f]{64}$')][string]$CandidateExecutableSha256,
+    [Parameter(Mandatory = $true)][uri]$FixtureBaseUrl,
+    [Parameter(Mandatory = $true)][string]$TestRoot
 )
 
 $ErrorActionPreference = "Stop"
+if ($FixtureBaseUrl.Scheme -ne "http" -or $FixtureBaseUrl.Host -ne "127.0.0.1" -or
+    $FixtureBaseUrl.Port -le 0 -or $FixtureBaseUrl.UserInfo -or
+    $FixtureBaseUrl.AbsolutePath -ne "/" -or $FixtureBaseUrl.Query -or $FixtureBaseUrl.Fragment) {
+    throw "Installer tests require the verified loopback fixture, not a public release destination"
+}
+foreach ($tag in @($CandidateVersion, $OlderVersion)) {
+    if ($tag -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:(?:a|b|rc)[0-9]+)?$') {
+        throw "Installer test versions must be exact vX.Y.Z release tags"
+    }
+}
+if ($env:OS -ne "Windows_NT") { throw "Native Windows installer tests require Windows" }
+$TestRoot = (Resolve-Path -LiteralPath $TestRoot -ErrorAction Stop).Path
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Resolve-Path (Join-Path $ScriptDir "..\..")
@@ -42,6 +60,21 @@ function Assert-True {
     } else {
         Write-Fail $Message
         $Script:Failures += $Message
+    }
+}
+
+function Test-ReportedVersion {
+    param([string]$Output, [string]$Version)
+    return $Output -match ("(?m)\bversion\s+" + [regex]::Escape($Version.TrimStart("v")) + "(?=\s|$)")
+}
+
+function Assert-CandidatePayload {
+    param([string]$Root)
+    $executable = Join-Path $Root "current\apm.exe"
+    Assert-True (Test-Path -LiteralPath $executable -PathType Leaf) "Candidate current\apm.exe exists"
+    if (Test-Path -LiteralPath $executable -PathType Leaf) {
+        $actual = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
+        Assert-True ($actual -ceq $CandidateExecutableSha256) "Installed executable is byte-identical to the verified candidate"
     }
 }
 
@@ -67,7 +100,7 @@ function Test-Sha256Fallback {
         return
     }
 
-    $tempFile = [System.IO.Path]::GetTempFileName()
+    $tempFile = Join-Path $TestRoot ([System.IO.Path]::GetRandomFileName())
     try {
         Set-Content -Path $tempFile -Value "the quick brown fox" -NoNewline -Encoding ASCII
         $expected = (Get-FileHash -Path $tempFile -Algorithm SHA256).Hash.ToLower()
@@ -83,7 +116,7 @@ Remove-Module Microsoft.PowerShell.Utility -Force -ErrorAction SilentlyContinue
 $($match.Value)
 Write-Output (Get-Sha256Hex -Path '$tempFile')
 "@
-        $childScriptPath = [System.IO.Path]::Combine($env:TEMP, [System.IO.Path]::GetRandomFileName() + ".ps1")
+        $childScriptPath = Join-Path $TestRoot ([System.IO.Path]::GetRandomFileName() + ".ps1")
         Set-Content -Path $childScriptPath -Value $childScript -Encoding UTF8
         try {
             $actual = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $childScriptPath 2>&1
@@ -203,7 +236,7 @@ Write-Output '---APM-JSON-END---'
 
     # Use GetRandomFileName so we don't leak the GetTempFileName-created
     # zero-byte .tmp companion file every run.
-    $tempScript = [System.IO.Path]::Combine($env:TEMP, [System.IO.Path]::GetRandomFileName() + ".ps1")
+    $tempScript = Join-Path $TestRoot ([System.IO.Path]::GetRandomFileName() + ".ps1")
     try {
         Set-Content -Path $tempScript -Value $childScript -Encoding UTF8
         $raw = & pwsh -NoProfile -NonInteractive -File $tempScript 2>&1
@@ -253,7 +286,11 @@ function Invoke-InstallScript {
         Remove-Item Env:APM_SKIP_CHECKSUM -ErrorAction SilentlyContinue
 
         & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $InstallScript | Out-Host
-        return $LASTEXITCODE
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -eq 0 -and $Version -ceq $CandidateVersion) {
+            Assert-CandidatePayload -Root (Split-Path -Parent $BinDir)
+        }
+        return $exitCode
     } finally {
         if ($null -ne $savedVersion)      { $env:VERSION = $savedVersion }            else { Remove-Item Env:VERSION -ErrorAction SilentlyContinue }
         if ($null -ne $savedInstallDir)   { $env:APM_INSTALL_DIR = $savedInstallDir } else { Remove-Item Env:APM_INSTALL_DIR -ErrorAction SilentlyContinue }
@@ -270,7 +307,7 @@ function Get-ShimVersion {
 
 function New-IsolatedPrefix {
     # Spaces and a cmd metacharacter exercise launcher/path quoting end to end.
-    $root = Join-Path ([System.IO.Path]::GetTempPath()) ("APM Install Test & Edge " + [System.Guid]::NewGuid().ToString("N"))
+    $root = Join-Path $TestRoot ("APM Install Test & Edge " + [System.Guid]::NewGuid().ToString("N"))
     $binDir = Join-Path $root "bin"
     $tmpDir = Join-Path $root "tmp"
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
@@ -346,13 +383,13 @@ sys.exit(1)
 # ---------------------------------------------------------------------------
 
 function Test-EndToEndInstall {
-    Write-Step "Test 3: End-to-end install of APM $PinnedVersion into isolated prefix"
+    Write-Step "Test 3: End-to-end install of APM $CandidateVersion into isolated prefix"
 
     $prefix = New-IsolatedPrefix
     try {
         Assert-True ($prefix.Root -match [regex]::Escape(" & ")) "Test prefix exercises spaces and a cmd metacharacter"
-        Write-Info "Running install.ps1 (VERSION=$PinnedVersion, APM_INSTALL_DIR=$($prefix.BinDir), APM_TEMP_DIR=$($prefix.TmpDir))"
-        $exitCode = Invoke-InstallScript -Version $PinnedVersion -BinDir $prefix.BinDir -TmpDir $prefix.TmpDir
+        Write-Info "Running install.ps1 (VERSION=$CandidateVersion, APM_INSTALL_DIR=$($prefix.BinDir), APM_TEMP_DIR=$($prefix.TmpDir))"
+        $exitCode = Invoke-InstallScript -Version $CandidateVersion -BinDir $prefix.BinDir -TmpDir $prefix.TmpDir
         Assert-True ($exitCode -eq 0) "install.ps1 exits 0 (got $exitCode)"
 
         $shim = Join-Path $prefix.BinDir "apm.cmd"
@@ -382,7 +419,7 @@ function Test-EndToEndInstall {
 
             $ver = Get-ShimVersion -ShimPath $shim
             Assert-True ($ver.ExitCode -eq 0) "apm.cmd --version exits 0 (got $($ver.ExitCode); output: $($ver.Output))"
-            Assert-True ($ver.Output -match $PinnedVersion.TrimStart("v")) "apm.cmd --version reports $PinnedVersion"
+            Assert-True (Test-ReportedVersion $ver.Output $CandidateVersion) "apm.cmd --version reports $CandidateVersion"
         }
 
         $currentDir = Join-Path $prefix.Root "current"
@@ -408,7 +445,7 @@ function Test-EndToEndInstall {
                 $cmdOutput = & cmd.exe /d /c 'set "PATH=%APM_LAUNCH_TEST_PATH%" && apm --version' 2>&1
                 $cmdExit = $LASTEXITCODE
                 Assert-True ($cmdExit -eq 0) "cmd.exe resolves bare apm (got $cmdExit; output: $cmdOutput)"
-                Assert-True (($cmdOutput | Out-String) -match [regex]::Escape($PinnedVersion.TrimStart("v"))) "cmd.exe reports $PinnedVersion"
+                Assert-True (Test-ReportedVersion ($cmdOutput | Out-String) $CandidateVersion) "cmd.exe reports $CandidateVersion"
 
                 $pythonScript = @'
 import os
@@ -429,7 +466,7 @@ sys.exit(result.returncode)
                 $pythonOutput = & python -c $pythonScript 2>&1
                 $pythonExit = $LASTEXITCODE
                 Assert-True ($pythonExit -eq 0) "Python subprocess resolves bare apm (got $pythonExit; output: $pythonOutput)"
-                Assert-True (($pythonOutput | Out-String) -match [regex]::Escape($PinnedVersion.TrimStart("v"))) "Python subprocess reports $PinnedVersion"
+                Assert-True (Test-ReportedVersion ($pythonOutput | Out-String) $CandidateVersion) "Python subprocess reports $CandidateVersion"
 
                 Assert-MissingStableExecutableFailsForNativeProcess `
                     -CurrentDir $currentDir `
@@ -443,7 +480,7 @@ sys.exit(result.returncode)
                     $bashOutput = & $bash.Source -lc 'cd "$1" && PATH="$2:$PATH" && command -v apm && apm --version' bash $bashTestDir $bashCurrentDir 2>&1
                     $bashExit = $LASTEXITCODE
                     Assert-True ($bashExit -eq 0) "Git Bash resolves bare apm (got $bashExit; output: $bashOutput)"
-                    Assert-True (($bashOutput | Out-String) -match [regex]::Escape($PinnedVersion.TrimStart("v"))) "Git Bash reports $PinnedVersion"
+                    Assert-True (Test-ReportedVersion ($bashOutput | Out-String) $CandidateVersion) "Git Bash reports $CandidateVersion"
                 }
             } finally {
                 Remove-Item Env:APM_LAUNCH_TEST_CWD -ErrorAction SilentlyContinue
@@ -454,6 +491,7 @@ sys.exit(result.returncode)
 
         $leftover = Get-ChildItem -Path $prefix.TmpDir -Filter "apm-install-*" -Directory -ErrorAction SilentlyContinue
         Assert-True (-not $leftover) "No leftover apm-install-* directory in APM_TEMP_DIR"
+        Test-SameVersionReinstall -Prefix $prefix
     } finally {
         Remove-Item -Recurse -Force $prefix.Root -ErrorAction SilentlyContinue
     }
@@ -474,7 +512,7 @@ function Test-NonJunctionCollision {
         New-Item -ItemType Directory -Force -Path $currentDir | Out-Null
         Set-Content -Path $canary -Value "preserve me" -Encoding ASCII
 
-        $exitCode = Invoke-InstallScript -Version $PinnedVersion -BinDir $prefix.BinDir -TmpDir $prefix.TmpDir
+        $exitCode = Invoke-InstallScript -Version $CandidateVersion -BinDir $prefix.BinDir -TmpDir $prefix.TmpDir
         Assert-True ($exitCode -eq 1) "Installer refuses a non-junction current path (got $exitCode)"
         Assert-True (Test-Path $canary -PathType Leaf) "Non-junction current path preserves its canary file"
 
@@ -486,59 +524,58 @@ function Test-NonJunctionCollision {
     }
 }
 
+function Test-CandidateChecksumRejection {
+    Write-Step "Test 3c: tampered candidate archive is rejected before promotion"
+
+    $prefix = New-IsolatedPrefix
+    $savedReleaseBase = $env:APM_RELEASE_BASE_URL
+    try {
+        $env:APM_RELEASE_BASE_URL = "$($FixtureBaseUrl.AbsoluteUri.TrimEnd('/'))/tampered"
+        $exitCode = Invoke-InstallScript -Version $CandidateVersion -BinDir $prefix.BinDir -TmpDir $prefix.TmpDir
+        Assert-True ($exitCode -eq 1) "Tampered candidate fails checksum verification (got $exitCode)"
+        Assert-True (-not (Test-Path (Join-Path $prefix.Root "current"))) "Tampered candidate has no promoted current path"
+        Assert-True (-not (Test-Path (Join-Path $prefix.BinDir "apm.cmd"))) "Tampered candidate has no command shim"
+        $executables = Get-ChildItem -LiteralPath $prefix.Root -Filter "apm.exe" -Recurse -ErrorAction SilentlyContinue
+        Assert-True (-not $executables) "Tampered candidate is not extracted or installed"
+    } finally {
+        $env:APM_RELEASE_BASE_URL = $savedReleaseBase
+        Remove-Item -Recurse -Force $prefix.Root -ErrorAction SilentlyContinue
+    }
+}
+
 # ---------------------------------------------------------------------------
-# Test 4a: Cross-version upgrade. Install OlderVersion, then PinnedVersion,
-# into the same prefix. The shim must end up pointing at PinnedVersion's
-# release dir and `apm --version` must report PinnedVersion.
+# Test 4a: Cross-version upgrade assertions on the real self-update scenario.
+# Reuse its old -> candidate transition rather than installing both a second time.
 # ---------------------------------------------------------------------------
 
 function Test-CrossVersionUpgrade {
-    Write-Step "Test 4a: Cross-version upgrade $OlderVersion -> $PinnedVersion in same prefix"
+    param([Parameter(Mandatory = $true)][hashtable]$Prefix)
+    Write-Step "Test 4a: Cross-version upgrade $OlderVersion -> $CandidateVersion in same prefix"
 
-    $prefix = New-IsolatedPrefix
-    try {
-        Write-Info "Step 1: install $OlderVersion"
-        $exit1 = Invoke-InstallScript -Version $OlderVersion -BinDir $prefix.BinDir -TmpDir $prefix.TmpDir
-        Assert-True ($exit1 -eq 0) "Step 1 install.ps1 exits 0 (got $exit1)"
+    $shim = Join-Path $Prefix.BinDir "apm.cmd"
+    $ver2 = Get-ShimVersion -ShimPath $shim
+    Assert-True ($ver2.ExitCode -eq 0) "Upgraded apm.cmd --version exits 0"
+    Assert-True (Test-ReportedVersion $ver2.Output $CandidateVersion) "Step 2: apm.cmd --version reports $CandidateVersion (got: $($ver2.Output))"
 
-        $shim = Join-Path $prefix.BinDir "apm.cmd"
-        $ver1 = Get-ShimVersion -ShimPath $shim
-        Assert-True ($ver1.Output -match $OlderVersion.TrimStart("v")) "Step 1: apm.cmd --version reports $OlderVersion (got: $($ver1.Output))"
+    $shimText = Get-Content $shim -Raw
+    Assert-True ($shimText -match [regex]::Escape($CandidateVersion)) "Step 2: shim references $CandidateVersion path"
 
-        Write-Info "Step 2: install $PinnedVersion over the existing install"
-        $exit2 = Invoke-InstallScript -Version $PinnedVersion -BinDir $prefix.BinDir -TmpDir $prefix.TmpDir
-        Assert-True ($exit2 -eq 0) "Step 2 install.ps1 exits 0 (got $exit2)"
-
-        $ver2 = Get-ShimVersion -ShimPath $shim
-        Assert-True ($ver2.Output -match $PinnedVersion.TrimStart("v")) "Step 2: apm.cmd --version reports $PinnedVersion (got: $($ver2.Output))"
-
-        $shimText = Get-Content $shim -Raw
-        Assert-True ($shimText -match [regex]::Escape($PinnedVersion)) "Step 2: shim references $PinnedVersion path"
-
-        # The version-stable junction must re-point at the new release so bare
-        # CreateProcess / Git Bash callers resolve the upgraded apm.exe, not the
-        # previous release still on disk. A wrong-target junction survives the
-        # installer's own Test-Path guard, so assert the resolved version too.
-        $stableExe = Join-Path $prefix.Root "current\apm.exe"
-        Assert-True (Test-Path $stableExe) "Stable current\apm.exe exists after upgrade"
-        if (Test-Path $stableExe) {
-            $stableVer = & $stableExe --version 2>&1
-            Assert-True (($stableVer | Out-String) -match [regex]::Escape($PinnedVersion.TrimStart("v"))) "current\apm.exe reports $PinnedVersion after upgrade"
-        }
-        $junctionLeftover = Get-ChildItem -Path $prefix.Root -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like "current.new-*" -or $_.Name -like "current.old-*" }
-        Assert-True (-not $junctionLeftover) "No leftover current.new-* / current.old-* junction temps at install root"
-
-        # Both release dirs may coexist (we only replace the matching tag),
-        # but the staging/backup helper dirs from the second install MUST be
-        # cleaned up.
-        $releasesDir = Join-Path $prefix.BinDir "..\releases" | Resolve-Path
-        $leftoverStaging = Get-ChildItem -Path $releasesDir -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like "*.new-*" -or $_.Name -like "*.old-*" }
-        Assert-True (-not $leftoverStaging) "No leftover .new-* / .old-* staging/backup dirs after upgrade"
-    } finally {
-        Remove-Item -Recurse -Force $prefix.Root -ErrorAction SilentlyContinue
+    # A wrong-target junction survives the installer's Test-Path guard.
+    $stableExe = Join-Path $Prefix.Root "current\apm.exe"
+    Assert-True (Test-Path $stableExe) "Stable current\apm.exe exists after upgrade"
+    if (Test-Path $stableExe) {
+        $stableVer = & $stableExe --version 2>&1
+        Assert-True ($LASTEXITCODE -eq 0) "current\apm.exe exits 0 after upgrade"
+        Assert-True (Test-ReportedVersion ($stableVer | Out-String) $CandidateVersion) "current\apm.exe reports $CandidateVersion after upgrade"
     }
+    $junctionLeftover = Get-ChildItem -Path $Prefix.Root -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "current.new-*" -or $_.Name -like "current.old-*" }
+    Assert-True (-not $junctionLeftover) "No leftover current.new-* / current.old-* junction temps at install root"
+
+    $releasesDir = Join-Path $Prefix.BinDir "..\releases" | Resolve-Path
+    $leftoverStaging = Get-ChildItem -Path $releasesDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "*.new-*" -or $_.Name -like "*.old-*" }
+    Assert-True (-not $leftoverStaging) "No leftover .new-* / .old-* staging/backup dirs after upgrade"
 }
 
 # ---------------------------------------------------------------------------
@@ -548,69 +585,61 @@ function Test-CrossVersionUpgrade {
 # ---------------------------------------------------------------------------
 
 function Test-SameVersionReinstall {
-    Write-Step "Test 4b: Same-version reinstall of $PinnedVersion exercises promote/backup branch"
+    param([Parameter(Mandatory = $true)][hashtable]$Prefix)
+    Write-Step "Test 4b: Same-version reinstall of $CandidateVersion exercises promote/backup branch"
 
-    $prefix = New-IsolatedPrefix
-    try {
-        Write-Info "Step 1: install $PinnedVersion"
-        $exit1 = Invoke-InstallScript -Version $PinnedVersion -BinDir $prefix.BinDir -TmpDir $prefix.TmpDir
-        Assert-True ($exit1 -eq 0) "Step 1 install.ps1 exits 0 (got $exit1)"
+    # Reuse the fresh-install scenario's prefix, which its caller cleans up.
+    $releasesDir = Join-Path $Prefix.BinDir "..\releases" | Resolve-Path
+    $releaseDir = Join-Path $releasesDir $CandidateVersion
+    Assert-True (Test-Path $releaseDir) "Release dir exists after first install ($releaseDir)"
+    $firstExe = Join-Path $releaseDir "apm.exe"
+    $firstStamp = (Get-Item $firstExe).LastWriteTimeUtc
+    $replacementCanary = Join-Path $releaseDir "reinstall-canary.txt"
+    Set-Content -LiteralPath $replacementCanary -Value "old release only" -Encoding ASCII
 
-        $releasesDir = Join-Path $prefix.BinDir "..\releases" | Resolve-Path
-        $releaseDir = Join-Path $releasesDir $PinnedVersion
-        Assert-True (Test-Path $releaseDir) "Release dir exists after first install ($releaseDir)"
-        $firstExe = Join-Path $releaseDir "apm.exe"
-        $firstStamp = (Get-Item $firstExe).LastWriteTimeUtc
+    Write-Info "Step 2: reinstall $CandidateVersion (must rename releaseDir aside, promote staging, delete backup)"
+    $exit2 = Invoke-InstallScript -Version $CandidateVersion -BinDir $Prefix.BinDir -TmpDir $Prefix.TmpDir
+    Assert-True ($exit2 -eq 0) "Step 2 install.ps1 exits 0 (got $exit2)"
 
-        Write-Info "Step 2: reinstall $PinnedVersion (must rename releaseDir aside, promote staging, delete backup)"
-        $exit2 = Invoke-InstallScript -Version $PinnedVersion -BinDir $prefix.BinDir -TmpDir $prefix.TmpDir
-        Assert-True ($exit2 -eq 0) "Step 2 install.ps1 exits 0 (got $exit2)"
+    Assert-True (Test-Path $releaseDir) "Release dir still exists after reinstall"
+    $secondExe = Join-Path $releaseDir "apm.exe"
+    Assert-True (Test-Path $secondExe) "apm.exe present after reinstall"
+    Assert-True (-not (Test-Path -LiteralPath $replacementCanary)) "Reinstall replaces the previous release tree, including its canary"
 
-        Assert-True (Test-Path $releaseDir) "Release dir still exists after reinstall"
-        $secondExe = Join-Path $releaseDir "apm.exe"
-        Assert-True (Test-Path $secondExe) "apm.exe present after reinstall"
+    # Promotion must replace the existing bundle, not leave it in place.
+    $secondStamp = (Get-Item $secondExe).LastWriteTimeUtc
+    Assert-True ($secondStamp -ge $firstStamp) "apm.exe write time advanced after reinstall ($firstStamp -> $secondStamp)"
 
-        # apm.exe must be the freshly staged copy, not the original (the
-        # promote step renames the old release dir aside and moves the
-        # staging dir into place, so write time must be >= first stamp).
-        $secondStamp = (Get-Item $secondExe).LastWriteTimeUtc
-        Assert-True ($secondStamp -ge $firstStamp) "apm.exe write time advanced after reinstall ($firstStamp -> $secondStamp)"
+    $ver = Get-ShimVersion -ShimPath (Join-Path $Prefix.BinDir "apm.cmd")
+    Assert-True ($ver.ExitCode -eq 0) "apm.cmd --version exits 0 after reinstall (got $($ver.ExitCode))"
+    Assert-True (Test-ReportedVersion $ver.Output $CandidateVersion) "apm.cmd --version reports $CandidateVersion after reinstall"
 
-        $ver = Get-ShimVersion -ShimPath (Join-Path $prefix.BinDir "apm.cmd")
-        Assert-True ($ver.ExitCode -eq 0) "apm.cmd --version exits 0 after reinstall (got $($ver.ExitCode))"
-        Assert-True ($ver.Output -match $PinnedVersion.TrimStart("v")) "apm.cmd --version reports $PinnedVersion after reinstall"
-
-        # The junction is rebuilt on every install; after a same-version
-        # reinstall it must still resolve the freshly promoted apm.exe for bare
-        # CreateProcess / Git Bash callers.
-        $stableExe = Join-Path $prefix.Root "current\apm.exe"
-        Assert-True (Test-Path $stableExe) "Stable current\apm.exe exists after reinstall"
-        if (Test-Path $stableExe) {
-            $stableVer = & $stableExe --version 2>&1
-            Assert-True (($stableVer | Out-String) -match [regex]::Escape($PinnedVersion.TrimStart("v"))) "current\apm.exe reports $PinnedVersion after reinstall"
-        }
-        $junctionLeftover = Get-ChildItem -Path $prefix.Root -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like "current.new-*" -or $_.Name -like "current.old-*" }
-        Assert-True (-not $junctionLeftover) "No leftover current.new-* / current.old-* junction temps at install root after reinstall"
-
-        $leftoverStaging = Get-ChildItem -Path $releasesDir -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like "*.new-*" -or $_.Name -like "*.old-*" }
-        Assert-True (-not $leftoverStaging) "No leftover .new-* / .old-* dirs after reinstall (rollback path didn't trigger and backup was deleted)"
-    } finally {
-        Remove-Item -Recurse -Force $prefix.Root -ErrorAction SilentlyContinue
+    $stableExe = Join-Path $Prefix.Root "current\apm.exe"
+    Assert-True (Test-Path $stableExe) "Stable current\apm.exe exists after reinstall"
+    if (Test-Path $stableExe) {
+        $stableVer = & $stableExe --version 2>&1
+        Assert-True ($LASTEXITCODE -eq 0) "current\apm.exe exits 0 after reinstall"
+        Assert-True (Test-ReportedVersion ($stableVer | Out-String) $CandidateVersion) "current\apm.exe reports $CandidateVersion after reinstall"
     }
+    $junctionLeftover = Get-ChildItem -Path $Prefix.Root -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "current.new-*" -or $_.Name -like "current.old-*" }
+    Assert-True (-not $junctionLeftover) "No leftover current.new-* / current.old-* junction temps at install root after reinstall"
+
+    $leftoverStaging = Get-ChildItem -Path $releasesDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "*.new-*" -or $_.Name -like "*.old-*" }
+    Assert-True (-not $leftoverStaging) "No leftover .new-* / .old-* dirs after reinstall (rollback path didn't trigger and backup was deleted)"
 }
 
 # ---------------------------------------------------------------------------
 # Test 5: Real `apm self-update` end-to-end. Install OlderVersion, then run
-# the installed apm.cmd's self-update command pinned to PinnedVersion. The
-# installed apm downloads install.ps1 for that release and runs it, exercising
+# the installed apm.cmd's self-update command targeting CandidateVersion. The
+# installed apm downloads this checkout's install.ps1 and runs it, exercising
 # the whole launch path that issue #1389 originally broke. The fresh apm.cmd
-# must report PinnedVersion afterwards.
+# must report CandidateVersion afterwards.
 #
 # The VERSION pin keeps the installed version deterministic and skips the live
-# releases/latest lookup in supported release binaries. Retry remains here as a
-# guard against transient installer-script download latency.
+# releases/latest lookup in supported release binaries. Transport is local and
+# deterministic, so retries would only mask regressions.
 # ---------------------------------------------------------------------------
 
 function Test-SelfUpdateCommand {
@@ -624,9 +653,10 @@ function Test-SelfUpdateCommand {
 
         $shim = Join-Path $prefix.BinDir "apm.cmd"
         $ver1 = Get-ShimVersion -ShimPath $shim
-        Assert-True ($ver1.Output -match $OlderVersion.TrimStart("v")) "Step 1: apm.cmd --version reports $OlderVersion (got: $($ver1.Output))"
+        Assert-True ($ver1.ExitCode -eq 0) "Self-update baseline apm.cmd --version exits 0"
+        Assert-True (Test-ReportedVersion $ver1.Output $OlderVersion) "Step 1: apm.cmd --version reports $OlderVersion (got: $($ver1.Output))"
 
-        Write-Info "Step 2: run apm self-update pinned to $PinnedVersion"
+        Write-Info "Step 2: run apm self-update targeting $CandidateVersion"
         # Point the self-update temp file at our isolated prefix so we don't
         # litter the runner's %LOCALAPPDATA% and so the staged install.ps1
         # has a writable temp dir.
@@ -639,25 +669,10 @@ function Test-SelfUpdateCommand {
         $savedVersion    = $env:VERSION
         $env:APM_TEMP_DIR    = $prefix.TmpDir
         $env:APM_INSTALL_DIR = $prefix.BinDir
-        $env:VERSION         = $PinnedVersion
+        $env:VERSION         = $CandidateVersion
         try {
-            $output = @()
-            $selfUpdateExit = 1
-            for ($attempt = 1; $attempt -le 3; $attempt++) {
-                Write-Info "self-update attempt $attempt of 3"
-                $output = & cmd.exe /c "`"$shim`" self-update" 2>&1
-                $selfUpdateExit = $LASTEXITCODE
-                if ($selfUpdateExit -eq 0) {
-                    break
-                }
-                $outputText = ($output | Out-String)
-                if ($outputText -notmatch "Unable to fetch latest version from (GitHub|remote)" -and $outputText -notmatch "Update failed:") {
-                    break
-                }
-                if ($attempt -lt 3) {
-                    Start-Sleep -Seconds (5 * $attempt)
-                }
-            }
+            $output = & cmd.exe /c "`"$shim`" self-update" 2>&1
+            $selfUpdateExit = $LASTEXITCODE
         } finally {
             if ($null -ne $savedTempDir)    { $env:APM_TEMP_DIR = $savedTempDir }       else { Remove-Item Env:APM_TEMP_DIR -ErrorAction SilentlyContinue }
             if ($null -ne $savedInstallDir) { $env:APM_INSTALL_DIR = $savedInstallDir } else { Remove-Item Env:APM_INSTALL_DIR -ErrorAction SilentlyContinue }
@@ -672,7 +687,9 @@ function Test-SelfUpdateCommand {
         $ver2 = Get-ShimVersion -ShimPath $shim
         Assert-True ($ver2.ExitCode -eq 0) "apm.cmd --version exits 0 after self-update"
 
-        Assert-True ($ver2.Output -match [regex]::Escape($PinnedVersion.TrimStart("v"))) "apm.cmd --version reports $PinnedVersion after self-update (got: $($ver2.Output))"
+        Assert-True (Test-ReportedVersion $ver2.Output $CandidateVersion) "apm.cmd --version reports $CandidateVersion after self-update (got: $($ver2.Output))"
+        Assert-CandidatePayload -Root $prefix.Root
+        Test-CrossVersionUpgrade -Prefix $prefix
     } finally {
         Remove-Item -Recurse -Force $prefix.Root -ErrorAction SilentlyContinue
     }
@@ -688,14 +705,39 @@ Write-Host "        APM install.ps1 Windows integration test                  " 
 Write-Host "=================================================================" -ForegroundColor Blue
 Write-Host ""
 
-Test-Sha256Fallback
-Test-MoveThenTestOrdering
-Test-AntivirusDetector
-Test-EndToEndInstall
-Test-NonJunctionCollision
-Test-CrossVersionUpgrade
-Test-SameVersionReinstall
-Test-SelfUpdateCommand
+$savedUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$savedEnvironment = @{}
+foreach ($name in @(
+    "Path", "VERSION", "APM_INSTALL_DIR", "APM_TEMP_DIR", "APM_SKIP_CHECKSUM",
+    "APM_RELEASE_BASE_URL", "APM_INSTALLER_BASE_URL", "APM_RELEASE_METADATA_URL",
+    "APM_NO_DIRECT_FALLBACK", "APM_LAUNCH_TEST_CWD", "APM_LAUNCH_TEST_PATH",
+    "NO_COLOR", "COLUMNS"
+)) {
+    $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+}
+try {
+    $fixture = $FixtureBaseUrl.AbsoluteUri.TrimEnd('/')
+    $env:APM_RELEASE_BASE_URL = "$fixture/releases"
+    $env:APM_INSTALLER_BASE_URL = "$fixture/installer"
+    $env:APM_RELEASE_METADATA_URL = "$fixture/unexpected-metadata"
+    $env:APM_NO_DIRECT_FALLBACK = "1"
+    $env:NO_COLOR = "1"
+    $env:COLUMNS = "200"
+    Remove-Item Env:APM_SKIP_CHECKSUM -ErrorAction SilentlyContinue
+
+    Test-Sha256Fallback
+    Test-MoveThenTestOrdering
+    Test-AntivirusDetector
+    Test-EndToEndInstall
+    Test-NonJunctionCollision
+    Test-CandidateChecksumRejection
+    Test-SelfUpdateCommand
+} finally {
+    [Environment]::SetEnvironmentVariable("Path", $savedUserPath, "User")
+    foreach ($name in $savedEnvironment.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], "Process")
+    }
+}
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Blue

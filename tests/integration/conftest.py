@@ -281,6 +281,16 @@ _MARKER_CHECKS: dict[str, tuple[Callable[[], bool], str]] = {
 }
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Let provisioned CI selections reject missing runtimes instead of skipping."""
+    parser.addoption(
+        "--strict-runtime-prerequisites",
+        action="store_true",
+        help="Fail collection when a selected test requires an unavailable runtime",
+    )
+
+
+@pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Auto-skip items whose marker precondition is not met.
 
@@ -291,6 +301,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         for marker_name, (check_fn, reason) in _MARKER_CHECKS.items():
             if item.get_closest_marker(marker_name) and not check_fn():
+                if marker_name.startswith("requires_runtime_") and config.getoption(
+                    "--strict-runtime-prerequisites"
+                ):
+                    raise pytest.UsageError(f"{item.nodeid}: required runtime missing: {reason}")
                 item.add_marker(pytest.mark.skip(reason=reason))
 
 

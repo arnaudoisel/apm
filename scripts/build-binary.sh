@@ -55,13 +55,6 @@ if ! uv run pyinstaller --version &> /dev/null; then
     exit 1
 fi
 
-# Check if UPX is available (optional, for compression)
-if command -v upx &> /dev/null; then
-    echo -e "${GREEN}UPX found - binary will be compressed${NC}"
-else
-    echo -e "${YELLOW}UPX not found - binary will not be compressed (install with: brew install upx)${NC}"
-fi
-
 # Inject build SHA into version.py
 VERSION_FILE="src/apm_cli/version.py"
 BUILD_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "")

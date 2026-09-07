@@ -15,23 +15,35 @@ from tests.workflow_contracts import load_workflow, shell_commands, workflow_job
 
 pytestmark = pytest.mark.component
 
-WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/build-release.yml"
-TEST_COMMAND = ["uv", "run", "pytest", "tests/unit", "tests/test_console.py"]
-PARALLEL_ARGS = ["-n", "auto", "--dist", "worksteal"]
+WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/release-platform.yml"
+TEST_COMMAND = ["uv", "run", "--frozen", "pytest", "tests/unit", "tests/test_console.py"]
+PARALLEL_ARGS = [
+    "-n",
+    "auto",
+    "--dist",
+    "worksteal",
+    "--durations=50",
+    "--store-durations",
+    "--junitxml=test-results/unit.xml",
+]
 DIAGNOSTIC_ARGS = ["-vv", "--tb=short", "--show-capture=no", "--no-showlocals"]
 
 
 def _assert_windows_diagnostics(workflow: dict) -> None:
     """Windows stays exhaustive, parallel, bounded, and fail-closed."""
-    job = workflow_job(workflow, "build-and-test")
+    job = workflow_job(workflow, "unit-tests")
     linux = workflow_step(job, "Run unit tests")
     windows = workflow_step(job, "Run unit tests (Windows diagnostics)")
-    assert linux["if"] == "matrix.platform != 'windows'"
+    assert linux["if"] == "inputs.platform != 'windows'"
     assert shell_commands(linux) == [TEST_COMMAND + PARALLEL_ARGS]
-    assert windows["if"] == "matrix.platform == 'windows'"
+    assert windows["if"] == "inputs.platform == 'windows'"
     assert windows["timeout-minutes"] == 60
     assert shell_commands(windows) == [[*TEST_COMMAND, *PARALLEL_ARGS, *DIAGNOSTIC_ARGS]]
-    assert windows["env"] == {**linux["env"], "PYTHONUNBUFFERED": "1"}
+    assert windows["env"] == {
+        "PYTHONUNBUFFERED": "1",
+        "GITHUB_TOKEN": "${{ secrets.GH_MODELS_PAT }}",
+        "GITHUB_APM_PAT": "${{ secrets.GH_CLI_PAT }}",
+    }
     for node in (job, windows):
         assert not node.get("continue-on-error", False)
 
@@ -54,7 +66,7 @@ def test_windows_diagnostics_contract_rejects_mutations(key: str, value: object)
     """A success-shaped replacement or changed safety bound is rejected."""
     workflow = deepcopy(load_workflow(WORKFLOW))
     step = workflow_step(
-        workflow_job(workflow, "build-and-test"), "Run unit tests (Windows diagnostics)"
+        workflow_job(workflow, "unit-tests"), "Run unit tests (Windows diagnostics)"
     )
     step[key] = value
     with pytest.raises(AssertionError):

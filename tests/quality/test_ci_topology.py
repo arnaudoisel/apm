@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -48,6 +49,7 @@ REQUIRED_SHARD_CHECKS = (
     "Build & Test Shard 1 (Linux)",
     "Build & Test Shard 2 (Linux)",
 )
+REQUIRED_SOURCE_CHECKS = ("Lint", RATCHET_CHECK, *REQUIRED_SHARD_CHECKS)
 REQUIRED_SHARD_ROOTS = (
     "tests/unit",
     "tests/test_console.py",
@@ -251,18 +253,13 @@ def _assert_topology(root: Path, inventory: dict[str, str]) -> None:
 
     workflows = root / ".github" / "workflows"
     ci = load_workflow(workflows / "ci.yml")
+    assert workflow_job(ci, "lint")["name"] == "Lint"
     ratchet = workflow_job(ci, RATCHET_JOB)
     assert ratchet["name"] == RATCHET_CHECK
     _assert_ci_test_targets(ci, inventory)
 
     merge_gate = load_workflow(workflows / "merge-gate.yml")
-    gate = workflow_job(merge_gate, "gate")
-    wait_step = workflow_step(gate, "Wait for all required checks")
-    expected_checks = wait_step["env"]["EXPECTED_CHECKS"]
-    assert isinstance(expected_checks, str)
-    assert RATCHET_CHECK not in expected_checks
-    for required_check in REQUIRED_SHARD_CHECKS:
-        assert required_check in expected_checks
+    _assert_required_source_checks(merge_gate)
 
     ratchet_callers: list[tuple[str, str]] = []
     for workflow_path in sorted(workflows.glob("*.yml")):
@@ -285,10 +282,49 @@ def repository_inventory(
     return _ratchet_test_inventory(repository_python_inventory)
 
 
-def test_test_architecture_ratchets_remain_non_required(
+def _assert_required_source_checks(merge_gate: WorkflowNode) -> None:
+    """Require exact source-check names in each event's declared gate policy."""
+    wait_step = workflow_step(workflow_job(merge_gate, "gate"), "Wait for all required checks")
+    expression = wait_step["env"]["EXPECTED_CHECKS"]
+    assert isinstance(expression, str)
+    match = re.fullmatch(
+        r"\$\{\{\s*github\.event_name == 'merge_group' && '([^']+)' \|\| '([^']+)'\s*\}\}",
+        expression,
+    )
+    assert match is not None, "expected explicit merge_group and pull_request check lists"
+    for event, checks in zip(("merge_group", "pull_request"), match.groups(), strict=True):
+        names = [name.strip() for name in checks.split(",")]
+        assert len(names) == len(set(names)), f"{event}: duplicate required check names"
+        assert "gate" not in names, f"{event}: gate cannot require itself"
+        for required_check in REQUIRED_SOURCE_CHECKS:
+            assert required_check in names, f"{event}: missing required check {required_check}"
+
+
+def test_source_checks_and_architecture_ratchets_are_required(
     repository_inventory: dict[str, str],
 ) -> None:
     _assert_topology(REPO_ROOT, repository_inventory)
+
+
+@pytest.mark.parametrize("required_check", REQUIRED_SOURCE_CHECKS)
+@pytest.mark.parametrize("event", ["merge_group", "pull_request"])
+@pytest.mark.parametrize("replacement", ["", "optional "])
+def test_required_source_check_removed_or_renamed_fails(
+    required_check: str, event: str, replacement: str
+) -> None:
+    """Either event losing a source check must break, even if the other retains it."""
+    merge_gate = deepcopy(load_workflow(REPO_ROOT / ".github/workflows/merge-gate.yml"))
+    wait_step = workflow_step(workflow_job(merge_gate, "gate"), "Wait for all required checks")
+    branches = wait_step["env"]["EXPECTED_CHECKS"].split(" || ")
+    index = 0 if event == "merge_group" else 1
+    if replacement:
+        branches[index] = branches[index].replace(required_check, replacement + required_check)
+    else:
+        branches[index] = branches[index].replace(required_check + ",", "")
+    wait_step["env"]["EXPECTED_CHECKS"] = " || ".join(branches)
+
+    with pytest.raises(AssertionError, match=f"{event}: missing required check"):
+        _assert_required_source_checks(merge_gate)
 
 
 def test_repository_ratchet_inventory_is_collected_once(

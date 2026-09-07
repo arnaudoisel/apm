@@ -4,22 +4,21 @@ sidebar:
   order: 3
 ---
 
-This document describes APM's integration testing strategy to ensure runtime setup scripts work correctly and the golden scenario from the README functions as expected.
+APM integration testing covers PR checks, merge queue runs, runtime smoke, and release qualification.
 
 ## Testing Strategy
 
 APM uses a tiered approach to integration testing:
 
-### 1. **Smoke Tests** (merge queue, runtime changes, and releases)
-- **Location**: `tests/integration/test_runtime_smoke.py`
-- **Purpose**: Fast verification that runtime setup scripts work
-- **Scope**: 
-  - Runtime installation (codex, llm)
-  - Binary functionality (`--version`, `--help`)
-  - APM runtime detection
-  - Workflow compilation without execution
-- **Duration**: ~2-3 minutes per platform
-- **Trigger**: merge queue integration workflow, runtime-code pushes, scheduled/manual runs, and release validation
+### 1. **Core Smoke** (merge queue and release builds)
+- **Location**: `tests/integration/test_core_smoke.py`
+- **Purpose**: fast verification that the built native binary starts and satisfies core CLI contracts
+- **Scope**: binary startup, `--version`, `--help`, and network-free core behavior
+- **Trigger**: merge queue integration workflow and each native release-platform build
+
+Runtime installation smoke remains in `tests/integration/test_runtime_smoke.py`
+and runs only in the runtime workflow or full integration selections that opt in
+to the required runtimes.
 
 ### 2. **End-to-End Golden Scenario Tests** (merge queue and promotion runs)
 - **Location**: `tests/integration/test_golden_scenario_e2e.py`
@@ -29,9 +28,9 @@ APM uses a tiered approach to integration testing:
   - Project initialization (`apm init`)
   - Dependency installation (`apm install`)
   - Real API calls to GitHub Models
-  - Copilot, Codex, LLM, and Gemini runtime execution
-- **Duration**: ~10-15 minutes per platform (with 20-minute timeout)  
-- **Trigger**: merge queue integration workflow, plus tag, schedule, and manual promotion runs
+  - Runtime-specific execution when the selected lane provisions that runtime
+- **Duration**: captured in hosted timing artifacts
+- **Trigger**: merge queue integration workflow, plus tag, schedule, and repository-dispatch release qualification runs
 
 ### 3. **Lifecycle Smoke** (PR-time required check)
 - **Location**: selected declaratively via `lifecycle_smoke and not lifecycle_merge_group`. Tests marked `lifecycle_merge_group` remain outside the bounded required set.
@@ -50,15 +49,20 @@ APM uses a tiered approach to integration testing:
 - **Run it locally** (the exact command CI runs):
   ```bash
   APM_E2E_TESTS=1 uv run --extra dev pytest -p no:cacheprovider -q --strict-markers \
+    -n 2 --dist loadgroup \
     -m 'lifecycle_smoke and not lifecycle_merge_group' tests/integration
   ```
 
-### 4. **Live Guardrailing Hero** (scheduled/manual)
+### 4. **Live Guardrailing Hero** (scheduled/repository dispatch)
 - **Location**: `tests/integration/test_guardrailing_hero_e2e.py`
 - **Purpose**: Preserve the real remote, token-gated packaged CLI hero without multiplying it across the default packaged platform matrix
 - **Scope**: project initialization, two GitHub-backed installs, compile/deploy, and prompt startup through the built Linux x64 binary
-- **Trigger**: one `ci-runtime.yml` invocation on schedule or manual dispatch that fails the workflow on error (`continue-on-error` is not set); never pull requests or the generic integration script
+- **Trigger**: one `ci-runtime.yml` invocation on schedule or repository dispatch that fails the workflow on hero or runtime-smoke errors; never pull requests or the generic integration script
 - **Selection mechanism**: the explicit test node with `-m live`; collection gates remain owned by `tests/integration/conftest.py`
+
+Nightly runtime smoke sets the required live opt-ins explicitly
+(`APM_E2E_TESTS=1`, `APM_RUN_INTEGRATION_TESTS=1`, and tokens). The separate
+inference-validation step is annotated but non-blocking.
 
 ## Running Tests Locally
 
@@ -86,10 +90,15 @@ what the test family you want actually requires.
 | `requires_runtime_llm` | The `llm` runtime installed under `~/.apm/runtimes/` | `apm runtime setup llm` |
 | `live` | Tests that hit real third-party repositories; deselected by default | Override the deselect: `pytest -m live tests/integration -v` |
 
-Without any of those env vars or runtimes a `pytest tests/integration`
-invocation is silent rather than red: every test is collected and
-reported as `SKIPPED` with a one-line reason, so you can see exactly
-what is missing and why.
+Without any of those env vars or runtimes, a local `pytest tests/integration`
+invocation is silent rather than red: every test is collected and reported as
+`SKIPPED` with a one-line reason, so you can see exactly what is missing and
+why.
+
+CI uses `--strict-runtime-prerequisites` for provisioned selections. If a
+selected runtime test would otherwise skip because its runtime is missing,
+collection fails instead. That prevents green builds caused by omitted runtime
+setup.
 
 ### Three marker axes
 
@@ -328,23 +337,24 @@ Packaged executable tests must continue to use `apm_binary_path`.
 
 ### CI orchestrator: `scripts/test-integration.sh`
 
-`scripts/test-integration.sh` is the thin orchestrator the CI
-integration job invokes. Its sole responsibilities are: resolve
-GitHub / ADO tokens, detect platform, locate or build the apm
-PyInstaller binary, install runtimes (codex / copilot / llm),
-install python test dependencies, and run
-`pytest tests/integration/` once. All per-test gating lives in the
-marker registry described above. New integration tests dropped into
-`tests/integration/` are picked up automatically; add the right
-`requires_*` marker and the registry will skip the test when its
-precondition is missing.
+`scripts/test-integration.sh` is the thin orchestrator the CI integration job
+invokes. Its responsibilities are: resolve GitHub / ADO tokens, detect platform,
+locate or build the apm PyInstaller binary, install the requested runtimes,
+install Python test dependencies, and run `pytest tests/integration/` once. All
+per-test gating lives in the marker registry described above.
 
-Release promotion sets `PYTEST_MARK_EXPR="not live"`, so an expiring
-third-party credential cannot block publication. Live ADO PAT coverage is
-owned by the **Auth Acceptance Tests** workflow: dispatch it with
-`ado_pat_e2e: true` and an `ado_repo` acceptance fixture. That workflow
-selects `live and requires_ado_pat`, requires
-`AUTH_TEST_ADO_APM_PAT`, and fails with the normal actionable auth
+`APM_TEST_RUNTIMES` controls which external runtimes the orchestrator installs:
+
+- unset locally: install `copilot codex llm`
+- `copilot`: install only Copilot CLI for full non-live release qualification
+- `none`: install no external runtime for focused lifecycle selections
+
+Release promotion sets `PYTEST_MARK_EXPR` instead of editing test lists. Full
+non-live qualification uses `not live`; the focused macOS Intel lifecycle lane
+uses `lifecycle_smoke and not live`. Live ADO PAT coverage is owned by the
+**Auth Acceptance Tests** workflow: dispatch it with `ado_pat_e2e: true` and an
+`ado_repo` acceptance fixture. That workflow selects `live and requires_ado_pat`,
+requires `AUTH_TEST_ADO_APM_PAT`, and fails with the normal actionable auth
 diagnostic when the PAT is rejected.
 
 Run the same focused acceptance locally with:
@@ -361,32 +371,112 @@ environment end-to-end; for local iteration prefer the direct
 
 ## CI/CD Integration
 
-### GitHub Actions Workflow
+### Pull requests and merge queue
 
-**On PR and merge queue:**
-1. PR-time unit checks and the hermetic Lifecycle Smoke gate run first; merge queue adds Linux smoke, integration, and release-validation gates.
+The required `gate` check is the single merge authority. It polls the exact
+check names expected for the event SHA and accepts only `success`; skipped,
+neutral, missing, duplicate, failed, cancelled, or timed-out checks fail closed.
 
-The required Windows compatibility gate selects `windows_compat` tests. Its collection guard requires a non-empty subset, not a fixed test count, so adding marked regressions does not require raising a ceiling. The workflow's test roots and timeout bound scope and runtime.
+At PR time the gate requires lint, test architecture ratchets, Linux unit
+shards, Windows compatibility, APM self-check, NOTICE drift, and Lifecycle
+Smoke. In merge queue context it also requires the Linux build, core smoke,
+full integration, release validation, and the coverage combine gate.
 
-Linux Lifecycle Smoke runs the required marker subset with `-n 2 --dist loadgroup`. Grouped tests stay on one worker, and the six-minute job limit remains unchanged.
+### Release qualification
 
-**On pushed version tag releases:**
-1. Unit tests + Smoke tests
-2. Build binaries (cross-platform)
-3. **E2E golden scenario tests** (using built binaries). Linux and macOS Apple Silicon retain the full non-live integration corpus; macOS Intel runs the marker-bounded `lifecycle_smoke and not live` subset plus native startup and isolated release validation.
-4. Create GitHub Release
-5. Publish to PyPI 
+`build-release.yml` qualifies native candidates by platform through
+`release-platform.yml`:
 
-**Daily scheduled release smoke:**
-- Runs the same promotion validation path once per day.
-- If a build matrix leg fails, downstream Linux/Windows integration and release-validation jobs still run for any platform artifact that was produced.
-- Failing scheduled runs update one `ci/daily-smoke` tracking issue; a later recovered run closes it.
-- This signal is advisory and is not a required PR check.
+1. Resolve whether to reuse a qualified candidate or build fresh.
+2. For fresh full validation, call source CI so lint, architecture ratchets,
+   coverage, red-team tests, and lifecycle smoke stay in the same authority as
+   normal CI.
+3. Run independent native unit and build jobs for each platform.
+4. Let platform integration, isolated archive validation, and the Windows
+   installer job depend only on that platform's build artifact.
+5. Promote only the exact archives that were packaged once, verified, unpacked,
+   and tested.
 
-**Manual workflow dispatch:**
-- Test builds (uploads as workflow artifacts)
-- Allows testing the full build pipeline without creating a release, even when dispatched from a tag ref
-- Useful for validating changes before tagging
+The publication path never repacks candidate archives. `scripts/package_release.py`
+packages each native archive once, records archive and executable SHA-256
+digests, verifies archive member safety, checks the embedded version/build SHA,
+extracts into a fresh destination, and rechecks the extracted executable before
+release upload.
+Candidate artifacts are attempt-scoped (`candidate-<run_attempt>-<binary_name>`;
+evidence is `release-candidate-evidence-<run_attempt>`), so partial reruns must
+not reuse old-attempt artifacts; use **Re-run all jobs** to regenerate complete
+qualification.
+
+### Candidate reuse on tags
+
+A pushed tag may reuse an existing candidate only when release evidence proves
+the same commit SHA already completed a successful, trusted-main full
+qualification with immutable run identity, artifact identity, and matching
+digests. Ordinary `main` green status is not enough, and PR artifacts are never
+publication inputs. An absent or expired candidate triggers a fresh full build.
+API errors or inconsistent candidate evidence fail the release rather than
+silently falling back.
+
+### Platform matrix
+
+Full release qualification runs on five native platforms for tags, schedules,
+and `repository_dispatch` `manual-build-release` runs:
+
+- Linux x86_64: `ubuntu-24.04`
+- Linux arm64: `ubuntu-24.04-arm`
+- Windows x86_64: `windows-latest`
+- macOS Intel: `macos-15-intel`
+- macOS Apple Silicon: `macos-latest`
+
+Ordinary `main` pushes keep the existing four-platform policy and exclude macOS
+Apple Silicon. macOS Intel runs the focused `lifecycle_smoke and not live`
+integration selection; full non-live lanes use `not live`.
+
+### Windows installer candidate testing
+
+The Windows installer job consumes the candidate archive produced by the build
+job. It does not depend on integration, release validation, or a pinned GitHub
+Release destination. Tests may use a previous binary only as an upgrade source;
+the destination under test is the freshly built candidate archive.
+
+Coverage has two paths. The fresh-candidate path checks install, native launch,
+junction cleanup, tamper rejection, and same-version reinstall; a canary proves
+the old candidate release tree is replaced. The older-source path installs the
+baseline once, then runs the real `apm self-update` lifecycle to the candidate
+and performs the cross-version upgrade assertions there.
+
+The wrapper requires six workflow-supplied inputs and has no published-release
+fallback:
+
+```text
+APM_CANDIDATE_ARCHIVE
+APM_CANDIDATE_VERSION
+APM_CANDIDATE_SHA256
+APM_BASELINE_ARCHIVE
+APM_BASELINE_VERSION
+APM_BASELINE_SHA256
+```
+
+Archive inputs are ZIP paths. SHA-256 inputs are hex digest strings, not
+`.sha256` file paths. Version inputs accept either the packager metadata form
+`X.Y.Z` or a historical `vX.Y.Z`; the wrapper normalizes to a leading `v`, and
+the baseline version must be older than the candidate version. Missing or bad
+candidate metadata fails the Windows E2E run; it does not skip or fall back to a
+published release.
+
+The job entrypoint is pytest, not the PowerShell helper. Set `APM_E2E_TESTS=1`
+and the six variables above, then run:
+
+```bash
+uv run --frozen --extra dev pytest -q tests/integration/test_windows_installer_launchers.py
+```
+
+Python owns the verified local HTTP server and mandatory suite arguments. It
+serves the verified archives and the current checkout's `install.ps1` bytes on
+`127.0.0.1` through the production mirror variables (`APM_RELEASE_BASE_URL`,
+`APM_INSTALLER_BASE_URL`, `APM_NO_DIRECT_FALLBACK=1`). Production `install.ps1`
+is unchanged. The test also compares the installed candidate executable hash
+with the executable member inside the candidate ZIP.
 
 ### Windows unit hang diagnostics
 
@@ -398,7 +488,9 @@ uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal -vv --tb
 
 `PYTHONUNBUFFERED=1` keeps named test starts and outcomes visible while the suite runs. Captured test output and local-variable dumps remain disabled. These diagnostics identify candidate unfinished tests, not stack frames or the exact blocked phase; an outcome can appear before fixture teardown completes.
 
-The 60-minute step limit fails closed on a hang; it is not proof that tests pass or a root-cause fix. Test selection and parallelism are unchanged. The PR-time `windows_compat` gate exercises live name visibility during setup, call, and teardown after a failed call.
+The 60-minute step limit fails closed on hangs. Test selection and parallelism
+are unchanged. The PR-time `windows_compat` gate exercises name visibility
+during setup, call, and teardown after a failed call.
 
 ### GitHub Actions Authentication
 
@@ -414,58 +506,8 @@ E2E tests require proper GitHub Models API access:
 
 Runtime setup prefers `GITHUB_TOKEN` for GitHub Models and falls back to `GITHUB_APM_PAT` when no user-scoped token is present.
 
-### Release Pipeline Sequencing
+### Lifecycle Smoke verifies
 
-The workflow ensures quality gates at each step:
-
-1. **build-and-test** jobs - Unit tests plus binary builds
-2. **integration-tests** job - Comprehensive non-live runtime scenarios
-3. **release-validation** job - Final shipped-binary validation
-4. **create-release** job - GitHub release creation
-5. **publish-pypi** job - PyPI package publication
-
-Each publication stage must succeed before proceeding to the next. Live
-third-party credential acceptance remains a failing gate in the opt-in Auth
-Acceptance workflow rather than a dependency of release publication.
-
-The [`microsoft/homebrew-apm`](https://github.com/microsoft/homebrew-apm) tap updates independently: it polls the latest APM release and commits formula updates with its own repository-scoped `GITHUB_TOKEN`. The release pipeline does not hold a cross-repository Homebrew credential.
-
-### Test Matrix
-
-Promotion integration tests run on:
-- **Linux**: ubuntu-24.04 (x86_64), ubuntu-24.04-arm (arm64)
-- **Windows**: windows-latest (x86_64)
-- **macOS Intel**: macos-15-intel (x86_64), with marker-bounded `lifecycle_smoke and not live` integration coverage, native binary startup, and isolated release validation
-- **macOS Apple Silicon**: macos-latest (arm64), with the full non-live integration corpus
-
-**Python Version**: 3.12 (standardized across all environments)
-**Package Manager**: uv (for fast dependency management and virtual environments)
-
-## What the Tests Verify
-
-### Smoke Tests Verify:
-- [+] Runtime setup scripts execute successfully
-- [+] Binaries are downloaded and installed correctly
-- [+] Binaries respond to basic commands
-- [+] APM can detect installed runtimes
-- [+] Configuration files are created properly
-- [+] Workflow compilation works (without execution)
-
-### E2E Tests Verify:
-- [+] Complete golden scenario from README works
-- [+] `apm runtime setup copilot` installs and configures GitHub Copilot CLI
-- [+] `apm runtime setup codex` installs and configures Codex
-- [+] `apm runtime setup llm` installs and configures LLM
-- [+] `apm init my-hello-world` creates project correctly
-- [+] `apm install` handles dependencies
-- [+] `apm run start --param name="Tester"` executes successfully
-- [+] Real API calls to GitHub Models work
-- [+] Parameter substitution works correctly
-- [+] MCP integration functions (GitHub tools)
-- [+] Binary artifacts work across platforms
-- [+] Release pipeline integrity (GitHub Release -> PyPI)
-
-### Lifecycle Smoke Verifies:
 - Install content-hash roundtrip (Consume contract)
 - Virtual-skill lock convergence (Produce contract, adjacent to the #2226 ADO lock-coordinate fix)
 - Policy pinned-constraint enforcement (Govern contract)
@@ -474,39 +516,41 @@ Promotion integration tests run on:
 - Prune's merged-hook and ownership-sidecar reconciliation for the `claude` target (the direct #2249 regression -- an orphaned package's merged hook entries and sidecar markers must be cleaned up, not left pointing at deleted scripts)
 - No network, no credentials, no built binary required for any of the above
 
-## Benefits
+### Timing and performance capture
 
-### **Speed vs Confidence Balance**
-- **Smoke tests**: Fast feedback (2-3 min) on every change
-- **E2E tests**: High confidence (15 min) only when shipping
+CI pytest lanes record `--durations=50`, JUnit XML, and `.test_durations`;
+`test-results-*` artifacts contain the files that lane writes.
 
-### **Cost Efficiency**
-- Smoke tests use no API credits
-- E2E tests only run on releases (minimizing API usage)
-- Manual workflow dispatch for test builds without publishing
+Do not restore mutable per-shard timing histories: different partition maps can
+omit tests. Merge-queue integration freezes one immutable `.test_durations`
+artifact in the existing build job, with no extra CI job; all four shards
+download that identical snapshot. PR unit shards record timings and JUnit only.
+They do not restore a rolling cache or present the shards as timing-balanced:
+the shared planner job required for that can cost more runner allocation time
+than it saves in balancing.
 
-### **Platform Coverage**
-- Tests run on all supported platforms
-- Catches platform-specific runtime issues
+Native full-suite release lanes may restore timing history through
+`.github/actions/pytest-timing`, keyed by OS, architecture, suite, commit SHA,
+and partition. It remains a hint only: no test-result cache, test selection, or
+allowlist. Grouped tests still use `--dist loadgroup` so HOME-mutating fixtures
+stay on one worker.
 
-### **Release Confidence**
-- E2E tests must pass before any publishing steps
-- Multi-stage release pipeline ensures quality gates
-- Guarantees shipped releases work end-to-end
-- Users can trust the README golden scenario
-- Cross-platform binary verification
+Inspect expensive fixtures by opening the slowest `--durations=50` entries and
+correlating fixture-heavy node IDs with JUnit XML for the same OS, architecture,
+suite, and shard. Do not claim release speedups until optimized hosted data
+exists; the current tag baseline is 39m16s.
 
 ## Debugging Test Failures
 
 ### Smoke Test Failures
-- Check runtime setup script output
-- Verify platform compatibility
-- Check network connectivity for downloads
+- Check the core smoke or runtime smoke step that failed.
+- Verify the native binary path and platform match the selected lane.
+- For runtime smoke, verify the relevant opt-in and runtime setup logs.
 
 ### E2E Test Failures  
 - **Use the unified integration script first**: Run `./scripts/test-integration.sh` to reproduce the exact CI environment locally
 - Verify `GITHUB_TOKEN` has required permissions (`models:read`)
-- Ensure both `GITHUB_TOKEN` and `GITHUB_MODELS_KEY` environment variables are set
+- Ensure the required GitHub and ADO tokens for the selected markers are set
 - Check GitHub Models API availability
 - Review actual vs expected output
 - Test locally with same environment

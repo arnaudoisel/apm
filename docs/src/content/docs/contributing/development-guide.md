@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-Thank you for considering contributing to APM! This document outlines the process for contributing to the project.
+Contributor setup, tests, CI gates, and pull requests.
 
 ## Code of Conduct
 
@@ -52,7 +52,20 @@ Enhancement suggestions are welcome! Please:
 2. Ensure your PR addresses only one concern (one feature, one bug fix).
 3. Include tests for new functionality.
 4. Update documentation if needed.
-5. PRs must pass all CI checks before they can be merged.
+5. PRs must pass the required `gate` check before they can be merged.
+
+### Required CI and release gates
+
+`Merge Gate / gate` is the required PR and merge-queue check. It accepts only
+successful underlying GitHub Actions checks; skipped, neutral, missing,
+duplicate, failed, cancelled, or timed-out checks fail closed. It requires Lint
+and Test Architecture Ratchets in both contexts.
+
+Release candidates never reuse PR artifacts. Tags publish only fresh full
+qualification or a same-SHA, trusted-main candidate with matching evidence.
+Ordinary `main` green status is not enough. See
+[Integration Testing](../integration-testing/) for the native platform matrix,
+runtime selections, and archive-promotion model.
 
 ### Workflow dependency updates
 

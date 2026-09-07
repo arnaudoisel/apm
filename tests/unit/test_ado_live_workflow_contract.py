@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -20,15 +21,11 @@ from tests.workflow_contracts import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "build-release.yml"
+RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release-platform.yml"
 AUTH_WORKFLOW = ROOT / ".github" / "workflows" / "auth-acceptance.yml"
 INTEGRATION_SCRIPT = ROOT / "scripts" / "test-integration.sh"
 LIVE_ADO_SELECTOR = "live and requires_ado_pat"
-RELEASE_INTEGRATION_STEPS = (
-    ("build-and-validate-macos-intel", "Run focused Intel integration tests"),
-    ("build-and-validate-macos-arm", "Run integration tests"),
-    ("integration-tests", "Run integration tests (Unix)"),
-)
+RELEASE_INTEGRATION_STEPS = (("integration-tests", "Run integration tests (Unix)"),)
 
 
 def _walk_nodes(value: Any) -> list[dict[str, Any]]:
@@ -56,7 +53,9 @@ def _assert_release_excludes_live_ado(workflow: dict[str, Any]) -> None:
         step = workflow_step(job, step_name)
         marker_expression = effective_env(workflow, job, step).get("PYTEST_MARK_EXPR")
         assert isinstance(marker_expression, str)
-        assert "not live" in marker_expression
+        assert marker_expression == "${{ inputs.integration-markers }}"
+    platforms = json.loads((ROOT / "scripts/release-platforms.json").read_text("ascii"))
+    assert all("not live" in row["integration_markers"] for row in platforms)
 
     windows_step = workflow_step(
         workflow_job(workflow, "integration-tests"),
@@ -156,8 +155,8 @@ def test_release_live_selector_mutation_is_rejected() -> None:
     """Publication cannot silently regain live external-service nodes."""
     workflow = deepcopy(load_workflow(RELEASE_WORKFLOW))
     step = workflow_step(
-        workflow_job(workflow, "build-and-validate-macos-arm"),
-        "Run integration tests",
+        workflow_job(workflow, "integration-tests"),
+        "Run integration tests (Unix)",
     )
     step["env"]["PYTEST_MARK_EXPR"] = "live"
 

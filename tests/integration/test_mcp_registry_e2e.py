@@ -14,12 +14,11 @@ the MCP registry functionality we've implemented.
 
 import json
 import os
-import shutil  # noqa: F401
 import subprocess
 import tempfile
 import time
+from functools import lru_cache
 from pathlib import Path
-from unittest import mock  # noqa: F401
 
 import pytest
 import toml
@@ -30,6 +29,7 @@ import toml
 _REGISTRY_TRANSIENT_MARKER = "could not reach mcp registry"
 
 
+@lru_cache(maxsize=1)
 def _is_registry_healthy() -> bool:
     """Check if GitHub MCP server has proper package configuration.
 
@@ -64,9 +64,10 @@ def _is_registry_healthy() -> bool:
         return False
 
 
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+
 # Skip all tests in this module if not in E2E mode
 E2E_MODE = os.environ.get("APM_E2E_TESTS", "").lower() in ("1", "true", "yes")
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 
 pytestmark = pytest.mark.requires_e2e_mode
 
@@ -159,6 +160,16 @@ def temp_e2e_home():
             del os.environ["HOME"]
 
 
+@pytest.fixture
+def healthy_github_mcp_registry():
+    """Skip selected package-install tests when the live registry lacks Docker packages."""
+    if not _is_registry_healthy():
+        pytest.skip(
+            "GitHub MCP server configured as remote-only (no packages) - "
+            "skipping installation tests"
+        )
+
+
 class TestMCPRegistryE2E:
     """E2E tests for MCP registry functionality."""
 
@@ -207,11 +218,12 @@ class TestMCPRegistryE2E:
         print(f"[OK] MCP show displays server details:\n{result.stdout[:500]}...")
 
     @pytest.mark.skipif(not GITHUB_TOKEN, reason="GITHUB_TOKEN required for installation tests")
-    @pytest.mark.skipif(
-        not _is_registry_healthy(),
-        reason="GitHub MCP server configured as remote-only (no packages) - skipping installation tests",
-    )
-    def test_registry_installation_with_codex(self, temp_e2e_home, apm_binary_path):
+    def test_registry_installation_with_codex(
+        self,
+        temp_e2e_home,
+        apm_binary_path,
+        healthy_github_mcp_registry,
+    ):
         """Test complete registry-based installation flow with Codex runtime."""
         print("\n=== Testing Registry Installation with Codex ===")
 
@@ -220,7 +232,6 @@ class TestMCPRegistryE2E:
         result = run_command(f"{apm_binary_path} runtime setup codex", timeout=300)
         assert result.returncode == 0, f"Codex setup failed: {result.stderr}"
 
-        # Verify codex config was created
         codex_config = Path(temp_e2e_home) / ".codex" / "config.toml"
         assert codex_config.exists(), "Codex configuration not created"
 
@@ -343,11 +354,12 @@ class TestMCPRegistryE2E:
             else:
                 pytest.fail("Codex configuration file not found after installation")
 
-    @pytest.mark.skipif(
-        not _is_registry_healthy(),
-        reason="GitHub MCP server configured as remote-only (no packages) - skipping installation tests",
-    )
-    def test_empty_string_handling_copilot_e2e(self, temp_e2e_home, apm_binary_path):
+    def test_empty_string_handling_copilot_e2e(
+        self,
+        temp_e2e_home,
+        apm_binary_path,
+        healthy_github_mcp_registry,
+    ):
         """Test end-to-end empty string and defaults handling during installation."""
         print("\n=== Testing Empty String and Defaults Handling ===")
 
@@ -465,7 +477,11 @@ class TestMCPRegistryE2E:
                 print("[WARN] Copilot configuration not created (binary may not be available)")
                 # This is OK for testing - we're validating the adapter logic
 
-    def test_empty_string_handling_e2e(self, temp_e2e_home, apm_binary_path):
+    def test_empty_string_handling_e2e(
+        self,
+        temp_e2e_home,
+        apm_binary_path,
+    ):
         """Test end-to-end empty string and defaults handling during installation."""
         print("\n=== Testing Empty String and Defaults Handling ===")
 
@@ -532,11 +548,12 @@ class TestMCPRegistryE2E:
 
                 print("[OK] Empty string handling verified in configuration")
 
-    @pytest.mark.skipif(
-        not _is_registry_healthy(),
-        reason="GitHub MCP server configured as remote-only (no packages) - skipping installation tests",
-    )
-    def test_cross_adapter_consistency(self, temp_e2e_home, apm_binary_path):
+    def test_cross_adapter_consistency(
+        self,
+        temp_e2e_home,
+        apm_binary_path,
+        healthy_github_mcp_registry,
+    ):
         """Test that Codex adapter handles MCP server installation consistently."""
         print("\n=== Testing Codex Adapter Consistency ===")
 
@@ -600,11 +617,12 @@ class TestMCPRegistryE2E:
             else:
                 pytest.fail("No Codex configuration found to verify")
 
-    @pytest.mark.skipif(
-        not _is_registry_healthy(),
-        reason="GitHub MCP server configured as remote-only (no packages) - skipping installation tests",
-    )
-    def test_duplication_prevention_e2e(self, temp_e2e_home, apm_binary_path):
+    def test_duplication_prevention_e2e(
+        self,
+        temp_e2e_home,
+        apm_binary_path,
+        healthy_github_mcp_registry,
+    ):
         """Test that repeated installations don't create duplicate entries."""
         print("\n=== Testing Duplication Prevention ===")
 
@@ -724,7 +742,7 @@ class TestSlugCollisionPrevention:
         try:
             # 'nonexistent-org/github-mcp-server' shares the slug with
             # 'io.github.github/github-mcp-server' but belongs to a
-            # different namespace — boundary matching must reject it.
+            # different namespace - boundary matching must reject it.
             result = client.find_server_by_reference("nonexistent-org/github-mcp-server")
         except Exception:
             pytest.skip("Registry unavailable")

@@ -32,20 +32,16 @@ try {
     exit 1
 }
 
-# Check if UPX is available (optional)
-if (Get-Command upx -ErrorAction SilentlyContinue) {
-    Write-Host "UPX found - binary will be compressed" -ForegroundColor Green
-} else {
-    Write-Host "UPX not found - binary will not be compressed" -ForegroundColor Yellow
-}
-
 # Inject build SHA into version.py
 $VersionFile = "src/apm_cli/version.py"
 $originalContent = Get-Content $VersionFile -Raw
 $BuildSHA = git rev-parse --short HEAD 2>$null
 if ($BuildSHA) {
     Write-Host "Injecting build SHA: $BuildSHA" -ForegroundColor Yellow
-    $newContent = $originalContent -replace '^__BUILD_SHA__ = None$', "__BUILD_SHA__ = `"$BuildSHA`""
+    $newContent = $originalContent -replace '(?m)^__BUILD_SHA__ = None\r?$', "__BUILD_SHA__ = `"$BuildSHA`""
+    if ($newContent -eq $originalContent) {
+        throw "Could not inject the candidate build SHA into version.py"
+    }
     Set-Content -Path $VersionFile -Value $newContent -NoNewline
 }
 

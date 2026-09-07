@@ -126,8 +126,9 @@ def _run_installer(
     stub = ROOT / "tests/utils/unix_installer_stub.py"
     for tool in tools:
         wrapper = tmp_path / "bin" / tool
+        # The stub is stdlib-only; avoid site hooks on every fake tool invocation.
         wrapper.write_text(
-            f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(stub))} {tool} "$@"\n',
+            f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -S {shlex.quote(str(stub))} {tool} "$@"\n',
             encoding="ascii",
         )
         wrapper.chmod(0o755)

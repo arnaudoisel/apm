@@ -1,0 +1,37 @@
+[
+  {
+    "runner": "ubuntu-24.04",
+    "platform": "linux",
+    "binary_name": "apm-linux-x86_64",
+    "integration_markers": "not live",
+    "on_main": true
+  },
+  {
+    "runner": "ubuntu-24.04-arm",
+    "platform": "linux",
+    "binary_name": "apm-linux-arm64",
+    "integration_markers": "not live",
+    "on_main": true
+  },
+  {
+    "runner": "windows-latest",
+    "platform": "windows",
+    "binary_name": "apm-windows-x86_64",
+    "integration_markers": "not live",
+    "on_main": true
+  },
+  {
+    "runner": "macos-15-intel",
+    "platform": "darwin",
+    "binary_name": "apm-darwin-x86_64",
+    "integration_markers": "lifecycle_smoke and not live",
+    "on_main": true
+  },
+  {
+    "runner": "macos-latest",
+    "platform": "darwin",
+    "binary_name": "apm-darwin-arm64",
+    "integration_markers": "not live",
+    "on_main": false
+  }
+]

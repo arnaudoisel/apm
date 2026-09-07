@@ -216,67 +216,37 @@ setup_binary_for_testing() {
 # Set up runtimes (codex/llm/copilot) - Integration Testing Coverage!
 setup_runtimes() {
     log_info "=== Setting up runtimes for integration tests ==="
-    
-    # Set up GitHub Copilot CLI runtime (recommended default)
-    log_info "Setting up GitHub Copilot CLI runtime..."
-    if ! ./apm runtime setup copilot; then
-        log_error "Failed to set up GitHub Copilot CLI runtime"
-        exit 1
-    fi
-    
-    # Set up codex runtime
-    log_info "Setting up Codex runtime..."
-    if ! ./apm runtime setup codex; then
-        log_error "Failed to set up Codex runtime"
-        exit 1
-    fi
-    
-    # Set up LLM runtime  
-    log_info "Setting up LLM runtime..."
-    if ! ./apm runtime setup llm; then
-        log_error "Failed to set up LLM runtime"
-        exit 1
-    fi
-    
-    # Add runtime paths to current session PATH
-    log_info "Adding runtime paths to current session..."
     RUNTIME_PATH="$HOME/.apm/runtimes"
     export PATH="$RUNTIME_PATH:$PATH"
-    
-    # Verify runtimes are available
-    log_info "Verifying runtime installations..."
-    
-    # Check GitHub Copilot CLI
-    if command -v copilot >/dev/null 2>&1; then
-        local copilot_version=$(copilot --version 2>&1 || echo "unknown")
-        log_success "GitHub Copilot CLI ready: $copilot_version"
-    else
-        log_error "GitHub Copilot CLI not found in PATH after setup"
-        exit 1
+    local runtimes="${APM_TEST_RUNTIMES:-copilot codex llm}"
+    if [[ "$runtimes" == "none" ]]; then
+        log_info "No external runtime prerequisite for this test selection"
+        return
     fi
-    
-    # Check codex
-    if command -v codex >/dev/null 2>&1; then
-        local codex_version=$(codex --version 2>&1 || echo "unknown")
-        log_success "Codex runtime ready: $codex_version"
-    else
-        log_error "Codex not found in PATH after setup"
-        echo "PATH: $PATH"
-        echo "Looking for codex in: $RUNTIME_PATH"
-        ls -la "$RUNTIME_PATH" || echo "Runtime directory not found"
-        exit 1
-    fi
-    
-    # Check LLM wrapper
-    local llm_path="$HOME/.apm/runtimes/llm"
-    if [[ -x "$llm_path" ]]; then
-        log_success "LLM runtime ready at: $llm_path"
-    else
-        log_error "LLM runtime not found at: $llm_path"
-        exit 1
-    fi
-    
-    log_success "All runtimes configured successfully (Copilot, Codex, LLM)"
+    local runtime
+    for runtime in $runtimes; do
+        case "$runtime" in
+            copilot|codex|llm) ;;
+            *)
+                log_error "Unknown APM_TEST_RUNTIMES entry: $runtime"
+                exit 1
+                ;;
+        esac
+        log_info "Setting up $runtime runtime..."
+        if ! ./apm runtime setup "$runtime"; then
+            log_error "Failed to set up $runtime runtime"
+            exit 1
+        fi
+        if ! command -v "$runtime" >/dev/null 2>&1; then
+            log_error "$runtime runtime is not executable after setup"
+            exit 1
+        fi
+        if [[ "$runtime" == "llm" && ! -x "$RUNTIME_PATH/llm" ]]; then
+            log_error "LLM wrapper is not executable after setup: $RUNTIME_PATH/llm"
+            exit 1
+        fi
+    done
+    log_success "Required runtimes configured successfully: $runtimes"
 }
 
 # Install test dependencies (like CI does)
@@ -369,6 +339,7 @@ run_e2e_tests() {
         log_info "Pytest marker selection: $PYTEST_MARK_EXPR"
     fi
     if pytest tests/integration/ -v --tb=short \
+        --strict-runtime-prerequisites \
         ${extra_args[@]+"${extra_args[@]}"} \
         ${marker_args[@]+"${marker_args[@]}"}; then
         log_success "Integration test suite passed (collected and ran via pytest discovery)"
