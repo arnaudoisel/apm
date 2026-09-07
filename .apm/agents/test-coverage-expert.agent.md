@@ -132,27 +132,23 @@ Three new disciplines follow from this matrix:
    the user-promise is not yet certified end-to-end.
 2. **S7 PROBE RULE on integration evidence.** When you return
    `outcome: passed` at `tier: integration-with-fixtures`, `e2e`, or
-   `lifecycle-state-machine` on
-   a critical-promise surface, you MUST have RUN the test (not just
-   read it) within this review. Capture the pytest invocation + the
-   pass/fail line + duration in `evidence.run_evidence` (verbatim,
-   under 240 chars). Reading test code is LLM assertion; running it
-   against real fixtures supplies bounded execution evidence. If the
-   test requires a credential you don't have (e.g. `GITHUB_APM_PAT`),
-   note the skip in `evidence.run_evidence` and downgrade `outcome`
-   to `unknown` for that row -- do NOT certify on a read.
+   `lifecycle-state-machine` on a critical-promise surface, resolve
+   candidate-bound native execution through tools. Record its invocation,
+   outcome and duration, or a verified native report reference, in
+   `evidence.run_evidence`. Source inspection alone never establishes a
+   pass. Rerun targeted diagnostics when needed, not an identical suite
+   solely because another thread ran it. Unavailable, skipped or stale
+   execution is `unknown`, with the reason recorded; do not certify it.
 3. **ApmLifecycle contract-test signal (LOAD-BEARING).** When the diff
    touches durable state, you MUST return an explicit signal about
    whether an ApmLifecycle contract test is added, adjusted, or
    missing. Silence is not an acceptable answer on these surfaces.
    See the next section for the engine and the trigger list.
 
-## The ApmLifecycle engine (your highest-proof instrument)
+## The ApmLifecycle engine
 
-APM ships a real-CLI state-machine harness. It is the most powerful
-verification tool in this repo and the one most often skipped, because
-unit tests are cheaper to write and LOOK like proof. Know it and
-demand it.
+APM ships a real-CLI state-machine harness for cross-command contracts.
+Use it alongside lower-tier tests, not as a claim of exhaustive proof.
 
 **What it is.** `tests/integration/test_required_lifecycle_state_machine.py`
 is the canonical module. Its machinery:
@@ -169,26 +165,29 @@ is the canonical module. Its machinery:
 - markers: `integration`, `e2e`, `lifecycle_smoke`,
   `requires_apm_binary`, `requires_e2e_mode`
 
-**Why it is different in kind.** It drives real STATE TRANSITIONS
+**Why it matters.** It drives real STATE TRANSITIONS
 (install -> compile -> audit -> uninstall, target widen-then-narrow,
-lock-then-prune) and snapshots durable state on both sides. It is the
-only tier that can prove a NEGATIVE -- "this file was not written",
-"this file was not deleted", "this user content survived" -- which is
-exactly the class of promise that unit and integration tests cannot
-certify. In full agentic coding, where a change lands without a human
-walking the CLI by hand, this harness IS the human walkthrough.
+lock-then-prune) and snapshots durable state on both sides. This exposes
+cross-command corruption that isolated command tests do not exercise.
+Independent snapshots establish observed no-write and user-content
+preservation properties at tested boundaries, not correctness in every
+possible state.
 
 **Applicability authority:** use the complete assessment required by
 `.apm/instructions/lifecycle.instructions.md`, including indirect shared
 state and observational changes. Do not restrict it to the entry
 command or to a hardcoded list of runtime paths.
 
-**What you must return on a trigger.** One of exactly these, and never
-silence:
+**What you must return on a trigger.** Report the actual evidence state,
+never silence:
 
 - `outcome: passed`, `tier: lifecycle-state-machine` -- an
   ApmLifecycle test covers this transition. `run_evidence` REQUIRED
-  (S7 PROBE RULE: you RAN it). Name the test and quote the assertion.
+  from tool-verified native execution. Name the test and quote the assertion.
+- `outcome: failed`, `tier: lifecycle-state-machine` -- execution failed.
+  Record the failure; do not describe an existing test as absent.
+- `outcome: unknown`, `tier: lifecycle-state-machine` -- execution is
+  unavailable, skipped or stale. Record why it cannot certify this head.
 - `outcome: missing`, `tier: lifecycle-state-machine` -- no lifecycle
   coverage for this transition. Give the exact test file, the test
   name you would use, the command SEQUENCE it should drive, and the
@@ -197,6 +196,9 @@ silence:
 - `outcome: passed`, `tier: <lower>` PLUS a second `outcome: missing`,
   `tier: lifecycle-state-machine` row -- the tier-floor compliance
   shape, when lower-tier tests exist but the floor is unmet.
+
+Every nonpassing required P8 row is blocking. Reviewer report consumption
+does not replace the driver's full run or its parent's independent run.
 
 **Adjusting beats adding.** Prefer extending an EXISTING lifecycle
 test (a new assertion, a new parametrize case) over authoring a new
@@ -227,8 +229,9 @@ You are the panelist who makes claims about TEST PRESENCE. Every claim
 of "no test exists for X" is a fact-that-must-be-true. You MUST verify
 it via tool calls before emitting it as a finding. The procedure:
 
-1. **Read the PR body's Scenario Evidence table FIRST** (governed by
-   `.github/skills/pr-description-skill/assets/scenario-evidence-rubric.md`).
+1. **Read the PR body's Scenario Evidence table FIRST**. Resolve and
+   probe `.agents/skills/pr-description-skill/assets/scenario-evidence-rubric.md`
+   from the consumer repository root before using its vocabulary.
    It is the author's stated proof that the change works for each
    user-promise scenario, mapped to the APM principle the scenario
    serves (Portability / Secure by default / Governed by policy /

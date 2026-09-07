@@ -96,7 +96,7 @@
         },
         "evidence": {
           "type": "object",
-          "description": "Optional irrefutable evidence backing this finding -- a real test that exists (passed/failed) or a real test that should exist but does not (missing). When present, the apm-ceo synthesizer treats this as LOAD-BEARING: a passed test proves the asserted user promise holds AT THE STATED TIER; a failed test proves it does not; a missing test on a critical-promise surface proves the regression-trap gap. Tier matters: a `unit` passed does NOT certify the promise at integration-with-fixtures or e2e tier, and a critical user-promise surface (CLI command, install pipeline, lockfile, auth, hooks, marketplace, cross-module integration -- see test-coverage-expert tier-floor matrix) requires `integration-with-fixtures` or `e2e` to fully certify. The CEO does not arbitrate against a passed/failed outcome except by naming a specific reason (test was wrong, tier was below the surface floor, environment issue, flakiness with run-count). REQUIRED on every test-coverage-expert finding (the persona's contract); STRONGLY ENCOURAGED on any finding from any other persona that points at a test (e.g. supply-chain-security citing a test proving an exploit, devx-ux citing a test proving an error wording).",
+          "description": "Candidate-bound evidence at the stated tier, not a claim of exhaustive correctness. REQUIRED on every test-coverage-expert finding; encouraged on other test-backed findings. Preserve actual passed, failed, missing or unknown states. Unit evidence cannot substitute for the surface's integration or lifecycle floor. The CEO may question assertion semantics, tier, environment or demonstrated flakiness, but cannot waive missing required P8 evidence.",
           "required": ["outcome", "tier"],
           "additionalProperties": false,
           "properties": {
@@ -120,7 +120,7 @@
             },
             "run_evidence": {
               "type": "string",
-              "description": "Optional. For `outcome=passed` at `tier=integration-with-fixtures` or `e2e` on a critical-promise surface, the persona SHOULD have actually run the test (not just read it) and recorded the pytest invocation + pass/fail line + duration here. Verbatim, under 240 chars. Reading code is not running code (S7 DETERMINISTIC TOOL BRIDGE: facts-that-must-be-true do not survive as LLM assertions)."
+              "description": "Native candidate-bound invocation, outcome and duration, or a tool-verified native report reference. Under 240 chars. Required for passed lifecycle evidence. Reviewers may resolve another thread's native run through tools; reading test source alone does not establish execution."
             },
             "assertion_excerpt": {
               "type": "string",
@@ -128,7 +128,7 @@
             },
             "proves": {
               "type": "string",
-              "description": "One sentence in USER words naming the promise the test proves (or fails to prove if missing). MUST mirror a Scenario Evidence row from the PR body when one exists -- the rubric (.github/skills/pr-description-skill/assets/scenario-evidence-rubric.md) is the shared vocabulary."
+              "description": "One sentence in USER words naming the observed promise or missing proof. MUST mirror a Scenario Evidence row when present. Resolve and probe .agents/skills/pr-description-skill/assets/scenario-evidence-rubric.md from the consumer repository root for the shared vocabulary."
             },
             "principles": {
               "type": "array",

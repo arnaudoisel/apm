@@ -88,7 +88,7 @@ surfaces findings; the maintainer and the PR author decide ship.
 | [OSS Growth Hacker](../../agents/oss-growth-hacker.agent.md) | Adoption Strategist | Yes |
 | [Auth Expert](../../agents/auth-expert.agent.md) | Auth / Token Reviewer | Conditional (see below) |
 | [Doc Writer](../../agents/doc-writer.agent.md) | Documentation Reviewer | Conditional (see below) |
-| [Test Coverage Expert](../../agents/test-coverage-expert.agent.md) | Test-Presence Reviewer (paired with DevX UX) | Yes (skipped only on docs-only PRs -- see below) |
+| [Test Coverage Expert](../../agents/test-coverage-expert.agent.md) | Test-Presence Reviewer (paired with DevX UX) | Yes for src or P8 lifecycle surfaces (see below) |
 | [Performance Expert](../../agents/performance-expert.agent.md) | Package-Manager Performance Reviewer | Conditional (see below) |
 | [APM CEO](../../agents/apm-ceo.agent.md) | Strategic Arbiter / Synthesizer | Yes |
 
@@ -311,8 +311,8 @@ no comment can be rendered, an explicit `noop` (step 9) -- are emitted.
      invent diagrams).
    - The recommended follow-ups list renders the CEO's curated subset,
      not every finding. Full per-persona findings collapse at the bottom.
-   - NEVER render the words "Verdict", "APPROVE", "REJECT", "blocked",
-     "merge gate", or any equivalent. The panel is advisory.
+   - Follow the template's advisory-versus-P8 distinction. Reporting an
+     unmet repository shipping precondition is not a panel verdict.
 
 8. **Sweep labels** via `safe-outputs.remove-labels`. The list MUST be
    `[panel-review, panel-approved, panel-rejected]` -- always all three,

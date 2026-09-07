@@ -63,6 +63,12 @@ def test_panel_retains_lazy_specialist_reference_in_deployed_bundle() -> None:
     ).read_bytes()
 
 
+def test_panel_template_can_report_unmet_repository_precondition() -> None:
+    """Advisory rendering must not conceal a required shipping failure."""
+    template = ROOT / "packages/apm-review-panel/assets/recommendation-template.md"
+    assert "P8 shipping precondition unsatisfied" in template.read_text(encoding="ascii")
+
+
 def _panel_evidence() -> dict[str, Any]:
     """Build the existing coverage persona's lifecycle evidence return shape."""
     return {
@@ -86,16 +92,19 @@ def _panel_evidence() -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize("outcome", ["passed", "failed", "unknown", "missing"])
 @pytest.mark.parametrize("missing", [None, "test_file", "run_evidence", "assertion_excerpt"])
 def test_panel_can_carry_only_complete_passing_lifecycle_evidence(
     missing: str | None,
+    outcome: str,
 ) -> None:
     """The declared persona tier must serialize without accepting empty proof."""
     schema_path = ROOT / "packages/apm-review-panel/assets/panelist-return-schema.json"
     schema = json.loads(schema_path.read_text(encoding="ascii"))
     Draft7Validator.check_schema(schema)
     document = _panel_evidence()
+    document["findings"][0]["evidence"]["outcome"] = outcome
     if missing:
         del document["findings"][0]["evidence"][missing]
     errors = list(Draft7Validator(schema).iter_errors(document))
-    assert bool(errors) is (missing is not None)
+    assert bool(errors) is (outcome == "passed" and missing is not None)

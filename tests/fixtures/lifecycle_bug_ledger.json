@@ -35,6 +35,8 @@
         ".agents/skills/apm-review-panel/references/conditional-panelists.md",
         "packages/apm-review-panel/assets/panelist-return-schema.json",
         ".agents/skills/apm-review-panel/assets/panelist-return-schema.json",
+        "packages/apm-review-panel/assets/recommendation-template.md",
+        ".agents/skills/apm-review-panel/assets/recommendation-template.md",
         "packages/pr-description-skill/assets/scenario-evidence-rubric.md",
         ".agents/skills/pr-description-skill/assets/scenario-evidence-rubric.md",
         "packages/shepherd-driver/SKILL.md",
