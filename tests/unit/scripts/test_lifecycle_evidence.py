@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -72,6 +73,11 @@ def _inventory() -> dict[str, click.Command]:
     return {"install": click.Command("install")}
 
 
+def _launcher() -> Path | None:
+    path = Path(sys.executable).parent / "apm"
+    return path if path.is_file() else None
+
+
 def _evidence() -> dict[str, Any]:
     return {
         "collected": True,
@@ -84,11 +90,12 @@ def _evidence() -> dict[str, Any]:
                 "args": [],
                 "returncode": 0,
                 "cwd": "/fixture",
+                "roots": {"HOME": "/fixture/home", "workspace": "/fixture"},
                 "model": 1,
-                "before": "a",
+                "before": before,
                 "after": after,
             }
-            for after in ("b", "a")
+            for before, after in (("a", "b"), ("b", "b"))
         ],
     }
 
@@ -189,6 +196,9 @@ def test_incomplete_contract_fails(mutation: str) -> None:
         "state",
         "json-only",
         "outside-model",
+        "roots",
+        "continuity",
+        "model-splice",
     ],
 )
 def test_execution_obligations_fail_closed(mutation: str) -> None:
@@ -215,10 +225,27 @@ def test_execution_obligations_fail_closed(mutation: str) -> None:
         evidence["events"][1]["after"] = "different"
     elif mutation == "outside-model":
         evidence["events"][1]["model"] = None
+    elif mutation == "roots":
+        evidence["events"][1]["roots"]["HOME"] = "/other/home"
+    elif mutation == "continuity":
+        evidence["events"][1].update(before="different", after="different")
+    elif mutation == "model-splice":
+        evidence["models"] = 2
+        evidence["events"][1]["model"] = 2
     else:
         evidence = {"status": "passed"}
     with pytest.raises(EvidenceError):
         validate_execution(witness, evidence)
+
+
+def test_intentional_fixture_mutation_requires_reviewed_preparation() -> None:
+    witness = _ledger()["lifecycle_contracts"][0]["witnesses"][1]
+    evidence = _evidence()
+    evidence["events"][1].update(before="tampered", after="tampered")
+    with pytest.raises(EvidenceError, match="trajectory"):
+        validate_execution(witness, evidence)
+    witness["transitions"][1]["preparation"] = "User tampers with deployed bytes before audit."
+    validate_execution(witness, evidence)
 
 
 def test_inventory_uses_recursive_registrations_and_aliases(
@@ -296,7 +323,7 @@ def test_plugin_observes_actual_execution_and_rejects_deselection(
     real = f"{path}::test_real[global]"
     skipped, xfailed = f"{path}::test_skip", f"{path}::test_xfail"
     generated = f"{path}::test_generated[global]"
-    executable = Path(sys.executable).parent / "apm"
+    executable = _launcher()
     plugin = LifecycleEvidencePlugin([real, skipped, xfailed, generated], executable)
     result = pytester.runpytest_inprocess("-q", "-o", "addopts=", plugins=[plugin])
     result.assert_outcomes(passed=2, skipped=1, xfailed=1)
@@ -330,7 +357,7 @@ def test_plugin_records_fixture_failures(pytester: pytest.Pytester, phase: str) 
             assert True
     """)
     nodeid = f"{module.name}::test_fixture"
-    plugin = LifecycleEvidencePlugin([nodeid], Path(sys.executable).parent / "apm")
+    plugin = LifecycleEvidencePlugin([nodeid], _launcher())
     result = pytester.runpytest_inprocess("-q", plugins=[plugin])
     assert result.ret != 0
     assert plugin.records[nodeid]["phases"][phase] == "failed"
@@ -345,12 +372,13 @@ def test_plugin_rejects_wrong_class_or_parameter(pytester: pytest.Pytester, sele
             assert variant
     """)
     nodeid = f"{module.name}{selector}"
-    plugin = LifecycleEvidencePlugin([nodeid], Path(sys.executable).parent / "apm")
+    plugin = LifecycleEvidencePlugin([nodeid], _launcher())
     result = pytester.runpytest_inprocess("-q", nodeid, plugins=[plugin])
     assert result.ret != 0
     assert not plugin.records
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Unix script launcher; Windows uses the source module")
 def test_source_profile_rejects_foreign_source_and_stale_launcher(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -360,8 +388,7 @@ def test_source_profile_rejects_foreign_source_and_stale_launcher(
     python = tmp_path / "python"
     python.write_text("fixture interpreter", encoding="ascii")
     monkeypatch.setattr(sys, "executable", str(python))
-    with pytest.raises(EvidenceError, match="Unix installed"):
-        source_profile(tmp_path)
+    assert source_profile(tmp_path)[0] is None
     launcher = tmp_path / "apm"
     launcher.write_text("#!/foreign/python\nfrom apm_cli.cli import cli\n", encoding="ascii")
     with pytest.raises(EvidenceError, match="this Python environment"):
@@ -422,7 +449,7 @@ from tests.utils.apm_lifecycle_runner import ApmLifecycleRunner
 @pytest.mark.parametrize("kind", ["deterministic", "generated"])
 def test_probe(tmp_path, kind):
     def commands():
-        env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home")}
+        env = {**os.environ, "HOME": str(tmp_path / "home"), "USERPROFILE": str(tmp_path / "home")}
         runner = ApmLifecycleRunner((sys.executable, "-m", "apm_cli.cli"))
         for _ in range(2):
             assert runner.run(["--version"], cwd=tmp_path, env=env).returncode == 0

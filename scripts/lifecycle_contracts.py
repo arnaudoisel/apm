@@ -145,6 +145,12 @@ def validate_contracts(
                     and all(isinstance(arg, str) for arg in transition["argv_contains"]),
                     f"{nodeid}: invalid argv constraints",
                 )
+                if "preparation" in transition:
+                    _require(
+                        isinstance(transition["preparation"], str)
+                        and transition["preparation"].strip(),
+                        f"{nodeid}: preparation needs a reviewed mutation rationale",
+                    )
         for param, values in row["dimensions"].items():
             _require(values and isinstance(values, list), f"{identifier}: empty dimension")
             for kind in ("deterministic", "generated"):
@@ -293,21 +299,38 @@ def validate_execution(witness: dict[str, Any], evidence: dict[str, Any]) -> Non
             for event in events
             if event.get("model") is not None and 0 < event["model"] <= evidence["models"]
         ]
+
     # One trajectory cannot be assembled out of independent temporary projects.
-    workspaces = {event["cwd"] for event in events}
+    def trajectory(event: dict[str, Any]) -> tuple[str, str, int | None]:
+        _require(event.get("roots"), f"{nodeid}: missing durable-root identity")
+        return event["cwd"], json.dumps(event["roots"], sort_keys=True), event.get("model")
+
+    def matches(event: dict[str, Any], expected: dict[str, Any]) -> bool:
+        return (
+            event["command"] == expected["command"]
+            and event["returncode"] == expected["returncode"]
+            and all(arg in event["args"] for arg in expected["argv_contains"])
+            and (
+                expected["state"] == "observed"
+                or (event["before"] == event["after"]) == (expected["state"] == "unchanged")
+            )
+        )
+
+    workspaces = {trajectory(event) for event in events}
     for workspace in workspaces:
         cursor = 0
-        for event in (event for event in events if event["cwd"] == workspace):
+        previous_after = None
+        for event in (event for event in events if trajectory(event) == workspace):
             expected = witness["transitions"][cursor]
             if (
-                event["command"] == expected["command"]
-                and event["returncode"] == expected["returncode"]
-                and all(arg in event["args"] for arg in expected["argv_contains"])
-                and (
-                    expected["state"] == "observed"
-                    or (event["before"] == event["after"]) == (expected["state"] == "unchanged")
-                )
+                previous_after is not None
+                and previous_after != event["before"]
+                and not (expected.get("preparation") and matches(event, expected))
             ):
+                cursor = 0
+                expected = witness["transitions"][cursor]
+            previous_after = event["after"]
+            if matches(event, expected):
                 cursor += 1
                 if cursor == len(witness["transitions"]):
                     return

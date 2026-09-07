@@ -40,10 +40,10 @@ def snapshot(cwd: Path, env: dict[str, str]) -> str:
 class LifecycleEvidencePlugin:
     """Observe exact nodes and runner invocations, never authored outcome strings."""
 
-    def __init__(self, nodeids: list[str], executable: Path) -> None:
+    def __init__(self, nodeids: list[str], executable: Path | None) -> None:
         self.nodeids = set(nodeids)
-        self.executable = executable.resolve()
-        self.executable_hash = fingerprint(self.executable)
+        self.executable = executable.resolve() if executable else None
+        self.executable_hash = fingerprint(self.executable) if self.executable else None
         self.python_hash = fingerprint(Path(sys.executable).resolve())
         self.inventory = command_inventory()
         self.records: dict[str, dict[str, Any]] = {}
@@ -64,12 +64,13 @@ class LifecycleEvidencePlugin:
                 return original(runner, args, **kwargs)
             command = runner._command
             source_command = (sys.executable, "-m", "apm_cli.cli")
-            if command != source_command and command != (str(self.executable),):
+            if command != source_command and not (
+                self.executable and command == (str(self.executable),)
+            ):
                 raise EvidenceError(f"Unverified source executable: {command}")
             if (
-                fingerprint(self.executable) != self.executable_hash
-                or fingerprint(Path(sys.executable).resolve()) != self.python_hash
-            ):
+                self.executable and fingerprint(self.executable) != self.executable_hash
+            ) or fingerprint(Path(sys.executable).resolve()) != self.python_hash:
                 raise EvidenceError("Executable changed during evidence execution")
             cwd, env = kwargs["cwd"], kwargs["env"]
             before = snapshot(cwd, env)
@@ -81,6 +82,14 @@ class LifecycleEvidencePlugin:
                     "args": list(args),
                     "returncode": result.returncode,
                     "cwd": str(cwd.resolve()),
+                    "roots": {
+                        "workspace": str(cwd.absolute()),
+                        **{
+                            key: str(Path(env[key]).absolute())
+                            for key in DURABLE_ENVIRONMENT_ROOTS
+                            if env.get(key)
+                        },
+                    },
                     "before": before,
                     "after": after,
                     "scenario_id": kwargs["scenario_id"],

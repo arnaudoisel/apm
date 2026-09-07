@@ -33,23 +33,23 @@ LIMITATIONS = [
 ]
 
 
-def source_profile(root: Path) -> tuple[Path, dict[str, str]]:
+def source_profile(root: Path) -> tuple[Path | None, dict[str, Any]]:
     """Identify the installed editable source and its exact interpreter/launcher."""
     import apm_cli
     from tests.utils.lifecycle_evidence import fingerprint
 
     if Path(apm_cli.__file__).resolve().parent != root / "src/apm_cli":
         raise EvidenceError("Installed source does not resolve to the candidate checkout")
-    executable = Path(sys.executable).parent / ("apm.exe" if os.name == "nt" else "apm")
-    if os.name == "nt" or not executable.is_file():
-        raise EvidenceError("source-python profile requires the Unix installed apm script")
-    script = executable.read_text(encoding="utf-8")
-    if "apm_cli.cli" not in script or not script.startswith(f"#!{sys.executable}\n"):
-        raise EvidenceError("Installed apm entrypoint is not this Python environment")
+    launcher = Path(sys.executable).parent / "apm"
+    executable = launcher if os.name != "nt" and launcher.is_file() else None
+    if executable:
+        script = executable.read_text(encoding="utf-8")
+        if "apm_cli.cli" not in script or not script.startswith(f"#!{sys.executable}\n"):
+            raise EvidenceError("Installed apm entrypoint is not this Python environment")
     return executable, {
         "kind": "source-python",
-        "executable": str(executable),
-        "executable_sha256": fingerprint(executable),
+        "executable": str(executable) if executable else None,
+        "executable_sha256": fingerprint(executable) if executable else None,
         "python": str(Path(sys.executable).resolve()),
         "python_sha256": fingerprint(Path(sys.executable).resolve()),
     }
@@ -127,7 +127,10 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         executable, report["profile"] = source_profile(ROOT)
         nodeids = sorted({witness["nodeid"] for witness in witnesses})
         plugin = LifecycleEvidencePlugin(nodeids, executable)
-        os.environ["APM_BINARY_PATH"] = str(executable)
+        if executable:
+            os.environ["APM_BINARY_PATH"] = str(executable)
+        else:
+            os.environ.pop("APM_BINARY_PATH", None)
         os.environ["APM_E2E_TESTS"] = "1"
         # No user-provided pytest options, deselection filters or receipt inputs.
         os.environ.pop("PYTEST_ADDOPTS", None)
