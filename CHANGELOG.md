@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Global skill installs now deploy authorized files when `HOME` or `APM_HOME` uses a directory symlink alias, without changing environment settings or accepting symlinks inside packages. (by @DaveMeadAdjust, #2867)
+- Global skill installs now deploy authorized files when `HOME` or `APM_HOME` uses a directory symlink alias, without changing environment settings or accepting symlinks inside packages. (by @DaveMeadAdjust, #2876)
 
 ## [0.30.0] - 2026-09-07
 
