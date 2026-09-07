@@ -6,11 +6,14 @@ import json
 import os
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
+from threading import current_thread, main_thread
 
 import pytest
+from click import unstyle
 
 from apm_cli.cache.url_normalize import cache_shard_key
 from apm_cli.deps.lockfile import LockFile
@@ -58,6 +61,33 @@ pytestmark = [
 _REMOTE_PREFIX = "https://gitlab.example.invalid/apm-lifecycle"
 _TAG = "lifecycle-v1"
 _ROWS = (*ROUTING_ROWS, *INTERACTION_ROWS)
+
+
+@contextmanager
+def _canonical_native_roots(row: RoutingRow | None = None) -> Iterator[None]:
+    """Keep parent scope resolution and copied child environments on fixture roots.
+
+    Only these row executors opt in; the shared environment and product target
+    resolver retain their supported overrides. Pytest workers are separate
+    processes. Reject threaded callers before changing process-global state,
+    and restore only the touched keys, including when setup or a command fails.
+    """
+    assert current_thread() is main_thread(), "Native-root isolation requires the main thread"
+    names = {"CLAUDE_CONFIG_DIR", "HERMES_HOME"}
+    if row is not None and row.dynamic_refusal:
+        names.update(
+            {
+                "APM_COPILOT_APP_DB",
+                "APM_COPILOT_COWORK_SKILLS_DIR",
+                "ONEDRIVE",
+                "ONEDRIVECOMMERCIAL",
+            }
+        )
+    with pytest.MonkeyPatch.context() as environment:
+        for name in tuple(os.environ):
+            if name.upper() in names:
+                environment.delenv(name)
+        yield
 
 
 def _assert_covering_array() -> None:
@@ -122,6 +152,7 @@ def _result(
     success: bool = True,
     deployment_root: Path | None = None,
     tampered_path: Path | None = None,
+    refusal_target: str | None = None,
 ) -> None:
     """Reject invalid command receipts before the action boundary credits laws."""
     if operation == "audit":
@@ -129,6 +160,34 @@ def _result(
         assert_ci_audit_result(
             result, clean=success, deployment_root=deployment_root, tampered_path=tampered_path
         )
+        return
+    if operation == "refusal":
+        receipt = f"refusal: exit={result.returncode}\n{result.stdout}\n{result.stderr}"
+        assert success is False and refusal_target in {
+            "copilot-app",
+            "copilot-cowork",
+        }, f"{receipt}\nMissing authored unavailable target"
+        assert type(result.returncode) is int, receipt
+        assert result.returncode == 1, receipt
+        output = " ".join(unstyle(f"{result.stdout}\n{result.stderr}").split()).casefold()
+        if refusal_target == "copilot-app":
+            diagnostic = (
+                "github copilot desktop app not detected" in output
+                and "~/.copilot/data.db" in output
+                and "file is missing" in output
+            )
+            recovery = "install the app" in output or "omit '--target copilot-app'" in output
+        else:
+            diagnostic = (
+                "cowork: no onedrive path detected" in output
+                or "cowork has no auto-detection on linux" in output
+            )
+            recovery = (
+                "set apm_copilot_cowork_skills_dir" in output
+                or "apm config set copilot-cowork-skills-dir" in output
+            )
+        assert diagnostic, f"{receipt}\nMissing {refusal_target} unavailable-root diagnostic"
+        assert recovery, f"{receipt}\nMissing {refusal_target} recovery hint"
         return
     assert (result.returncode == 0) is success, (
         f"{operation}: exit={result.returncode}\n{result.stdout}\n{result.stderr}"
@@ -650,6 +709,29 @@ def _execute_row(
     observed: list[InteractionOracle],
     relative_local_children: bool | None,
 ) -> CaseExecution:
+    """Isolate every caller, including campaigns that inject their own runner."""
+    with _canonical_native_roots(row):
+        return _execute_row_body(
+            tmp_path,
+            row,
+            runner,
+            started,
+            idempotency_snapshots,
+            observed,
+            relative_local_children,
+        )
+
+
+def _execute_row_body(
+    tmp_path: Path,
+    row: RoutingRow,
+    runner: ApmLifecycleRunner,
+    started: float,
+    idempotency_snapshots: list[tuple[ArtifactSnapshotSet, ArtifactSnapshotSet]] | None,
+    observed: list[InteractionOracle],
+    relative_local_children: bool | None,
+) -> CaseExecution:
+    """Execute the row inside the injected-runner entrypoint's native-root boundary."""
     isolated = IsolatedApmEnvironment.create(tmp_path / row.id, base_env=dict(os.environ))
     environment = isolated.subprocess_env()
     # Gated target names cannot yet appear in a fixture manifest before enable.
@@ -660,8 +742,7 @@ def _execute_row(
     )
     packages: list[LocalPackage] = []
     fixtures: list[SourceFixture] = []
-    rewrites = []
-    git_sources = []
+    rewrites, git_sources = [], []
     expected_commits = {}
     dependencies = []
     names = (
@@ -826,6 +907,7 @@ def _execute_row(
             success=success,
             deployment_root=deploy_root,
             tampered_path=tampered_path,
+            refusal_target=row.targets[0] if row.dynamic_refusal else None,
         )
         if oracle.hook_targets:
             oracle.assert_hook_coowner_installed()

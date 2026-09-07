@@ -5,6 +5,9 @@ from __future__ import annotations
 import ast
 import json
 import os
+import time
+from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,9 +25,10 @@ from apm_cli.deps.lockfile import LockedDependency, LockFile
 from apm_cli.integration.targets import KNOWN_TARGETS
 from apm_cli.utils.path_security import PathTraversalError
 from tests.utils.apm_lifecycle_runner import CommandResult
-from tests.utils.artifact_snapshot import assert_snapshot_set_unchanged
+from tests.utils.artifact_snapshot import ArtifactSnapshotSet, assert_snapshot_set_unchanged
 from tests.utils.lifecycle_interaction_oracle import (
     InteractionOracle,
+    RoutingExpectation,
     SourceFixture,
     assert_members_preserved,
     expected_routing,
@@ -35,6 +39,202 @@ if TYPE_CHECKING:
     from tests.integration.test_primitive_target_covering_array import _HookCoOwnerSetup
 
 pytestmark = [pytest.mark.component, pytest.mark.lifecycle_smoke]
+
+
+@pytest.fixture(autouse=True)
+def canonical_native_roots() -> Iterator[None]:
+    """Direct oracle controls use the same static-root boundary as native rows."""
+    from tests.integration.test_primitive_target_covering_array import _canonical_native_roots
+
+    with _canonical_native_roots():
+        yield
+
+
+def _invoke_root_control(tmp_path: Path, row: RoutingRow, entrypoint: str) -> None:
+    """Exercise either supported caller without changing the injected-runner API."""
+    from tests.integration import test_primitive_target_covering_array as execution
+
+    binary = tmp_path / "unused-apm"
+    if entrypoint == "public":
+        execution.execute_row(tmp_path, binary, row)
+    else:
+        assert entrypoint == "direct"
+        runner = execution.ApmLifecycleRunner((str(binary),))
+        with runner.scenario(scenario_id=row.id):
+            execution._execute_row(tmp_path, row, runner, time.monotonic(), None, [], None)
+
+
+def test_injected_row_entry_owns_native_root_context() -> None:
+    """Direct and public callers reach the same context before the execution body."""
+    from tests.integration import test_primitive_target_covering_array as execution
+
+    module = ast.parse(Path(execution.__file__).read_text(encoding="utf-8"))
+    entry = next(
+        (node for node in module.body if getattr(node, "name", "") == "_execute_row"), None
+    )
+    assert isinstance(entry, ast.FunctionDef), "Missing injected-runner entrypoint"
+    contexts = [node for node in entry.body if isinstance(node, ast.With)]
+    assert len(contexts) == 1, "Injected-runner entrypoint omitted native-root context"
+    context = contexts[0]
+    assert len(context.items) == 1
+    expected = ast.parse("_canonical_native_roots(row)", mode="eval").body
+    assert ast.dump(context.items[0].context_expr) == ast.dump(expected)
+    assert len(context.body) == 1 and isinstance(context.body[0], ast.Return)
+    call = context.body[0].value
+    assert isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    assert call.func.id == "_execute_row_body", "Isolation must enclose the real row body"
+    assert [ast.dump(arg) for arg in call.args] == [
+        ast.dump(ast.Name(id=arg.arg, ctx=ast.Load())) for arg in entry.args.args
+    ]
+    assert not call.keywords
+
+
+@pytest.mark.parametrize("entrypoint", ("public", "direct"))
+@pytest.mark.parametrize("row_id", ("claude-instructions-user", "hermes-skills-user"))
+def test_configured_native_roots_are_isolated_before_fixture_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, row_id: str, entrypoint: str
+) -> None:
+    """Stop at the first CLI boundary, after real source authoring and neighbor seeding."""
+    from tests.integration import test_primitive_target_covering_array as execution
+
+    external = tmp_path / "external"
+    overrides = {
+        "CLAUDE_CONFIG_DIR": external / "claude",
+        "HERMES_HOME": external / "hermes",
+    }
+    for name, root in overrides.items():
+        root.mkdir(parents=True)
+        (root / "unrelated.txt").write_bytes(f"untouched {name}\n".encode())
+        monkeypatch.setenv(name, str(root))
+    before = ArtifactSnapshotSet.capture({"external": external})
+    row = next(row for row in ROUTING_ROWS if row.id == row_id)
+    seen = []
+    seed_unowned = execution._seed_unowned
+
+    def require_canonical_seed(oracle: InteractionOracle, lifetime: RoutingExpectation) -> None:
+        # Check before writing: a future omission proof must never follow an
+        # absolute override into _seed_unowned's home-relative neighbor layout.
+        assert not set(overrides) & {name.upper() for name in os.environ}
+        source = oracle.sources[0]
+        expected = (
+            f".claude/rules/{source.name}.md"
+            if row.targets == ("claude",)
+            else f".hermes/skills/{source.name}/SKILL.md"
+        )
+        assert lifetime.files == {expected}, "Configured root changed the authored relative route"
+        seed_unowned(oracle, lifetime)
+
+    def stop_before_cli(
+        _runner: object,
+        arguments: tuple[str, ...],
+        *,
+        scenario_id: str,
+        cwd: Path,
+        env: Mapping[str, str],
+    ) -> CommandResult:
+        assert arguments[0] == "install" and scenario_id == f"{row.id}-install"
+        assert not set(overrides) & {name.upper() for name in os.environ}
+        assert not set(overrides) & {name.upper() for name in env}
+        profile = KNOWN_TARGETS[row.targets[0]].for_scope(user_scope=True)
+        assert profile is not None
+        assert profile.root_dir == f".{row.targets[0]}"
+        assert (Path(env["HOME"]) / profile.root_dir / "unrelated.txt").read_bytes() == (
+            b"unowned neighbor\n"
+        )
+        assert cwd.is_dir()
+        seen.append(scenario_id)
+        raise RuntimeError("configured-root control stopped before CLI")
+
+    monkeypatch.setattr(execution, "_seed_unowned", require_canonical_seed)
+    monkeypatch.setattr(execution.ApmLifecycleRunner, "run", stop_before_cli)
+    with pytest.raises(RuntimeError, match="configured-root control stopped before CLI"):
+        _invoke_root_control(tmp_path, row, entrypoint)
+    assert seen == [f"{row.id}-install"]
+    assert {name: os.environ.get(name) for name in overrides} == {
+        name: str(root) for name, root in overrides.items()
+    }
+    assert_snapshot_set_unchanged(before, ArtifactSnapshotSet.capture({"external": external}))
+
+
+@pytest.mark.parametrize("entrypoint", ("public", "direct"))
+@pytest.mark.parametrize(
+    "row", tuple(row for row in ROUTING_ROWS if row.dynamic_refusal), ids=lambda row: row.id
+)
+def test_unavailable_rows_strip_explicit_dynamic_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, row: RoutingRow, entrypoint: str
+) -> None:
+    """Only the existing refusal rows suppress explicit DB, skills and OneDrive roots."""
+    from tests.integration import test_primitive_target_covering_array as execution
+
+    external = tmp_path / "external"
+    external.mkdir()
+    db = external / "data.db"
+    db.write_bytes(b"disposable app database sentinel\n")
+    skills = external / "skills"
+    skills.mkdir()
+    (skills / "SKILL.md").write_bytes(b"disposable cowork skill sentinel\n")
+    overrides = {
+        "APM_COPILOT_APP_DB": str(db),
+        "APM_COPILOT_COWORK_SKILLS_DIR": str(skills),
+        "ONEDRIVE": str(external),
+        "ONEDRIVECOMMERCIAL": str(external),
+    }
+    for name, value in overrides.items():
+        monkeypatch.setenv(name, value)
+    before = ArtifactSnapshotSet.capture({"external": external})
+    seen = []
+
+    def stop_before_cli(
+        _runner: object,
+        arguments: tuple[str, ...],
+        *,
+        scenario_id: str,
+        cwd: Path,
+        env: Mapping[str, str],
+    ) -> CommandResult:
+        assert arguments[:2] == ("experimental", "enable")
+        assert scenario_id.startswith(f"{row.id}-enable-")
+        assert not overrides.keys() & os.environ.keys()
+        assert not overrides.keys() & env.keys()
+        assert not (Path(env["HOME"]) / ".copilot/data.db").exists()
+        assert not (Path(env["HOME"]) / "Library/CloudStorage").exists()
+        assert cwd.is_dir()
+        seen.append(scenario_id)
+        raise RuntimeError("dynamic-root control stopped before CLI")
+
+    monkeypatch.setattr(execution.ApmLifecycleRunner, "run", stop_before_cli)
+    with pytest.raises(RuntimeError, match="dynamic-root control stopped before CLI"):
+        _invoke_root_control(tmp_path, row, entrypoint)
+    assert len(seen) == 1
+    assert {name: os.environ.get(name) for name in overrides} == overrides
+    with execution._canonical_native_roots():
+        assert {name: os.environ.get(name) for name in overrides} == overrides
+    assert_snapshot_set_unchanged(before, ArtifactSnapshotSet.capture({"external": external}))
+
+
+def test_native_root_context_restores_only_its_keys_and_rejects_threads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restoration is exception-safe without clearing unrelated process state."""
+    from tests.integration.test_primitive_target_covering_array import _canonical_native_roots
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "external"))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    with _canonical_native_roots():
+        assert "CLAUDE_CONFIG_DIR" not in os.environ and "HERMES_HOME" not in os.environ
+        monkeypatch.setenv("APM_NATIVE_ROOT_CONTROL", "keep")
+    assert os.environ.get("CLAUDE_CONFIG_DIR") == str(tmp_path / "external")
+    assert "HERMES_HOME" not in os.environ
+    assert os.environ.get("APM_NATIVE_ROOT_CONTROL") == "keep"
+
+    def enter_from_thread() -> None:
+        with _canonical_native_roots():
+            return
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with pytest.raises(AssertionError, match="requires the main thread"):
+            executor.submit(enter_from_thread).result()
+    assert os.environ.get("CLAUDE_CONFIG_DIR") == str(tmp_path / "external")
 
 
 def _oracle(tmp_path: Path) -> InteractionOracle:
@@ -566,6 +766,189 @@ def test_native_containment_rejects_post_snapshot_symlink_escape(tmp_path: Path)
         oracle._native_path(relative, entries)
 
 
+def _refusal_receipt(root: Path, target: str, *, linux: bool = False) -> CommandResult:
+    """Author independently recognizable root diagnostics, not production formatting."""
+    diagnostic = (
+        "GitHub Copilot desktop App not detected.\n"
+        "Expected ~/.copilot/data.db but the file is missing."
+        if target == "copilot-app"
+        else (
+            "Cowork has no auto-detection on Linux."
+            if linux
+            else "Cowork: no OneDrive path detected."
+        )
+    )
+    recovery = (
+        "Install the app, or omit '--target copilot-app'."
+        if target == "copilot-app"
+        else (
+            "Set APM_COPILOT_COWORK_SKILLS_DIR or run: "
+            "apm config set copilot-cowork-skills-dir <path>"
+        )
+    )
+    return CommandResult(
+        ("apm", "install", "--global", "--target", target),
+        1,
+        diagnostic,
+        recovery,
+        root,
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "linux"),
+    (("copilot-app", False), ("copilot-cowork", False), ("copilot-cowork", True)),
+)
+def test_refusal_receipt_credits_only_unavailable_root(
+    tmp_path: Path, target: str, linux: bool
+) -> None:
+    """Both native diagnostics survive stream splitting, styling and line wrapping."""
+    from tests.integration.test_primitive_target_covering_array import _result
+
+    oracle = _oracle(tmp_path)
+    result = _refusal_receipt(oracle.roots["project"], target, linux=linux)
+    result = replace(
+        result,
+        stdout=f"\x1b[31m[x] {result.stdout.replace(' ', '  ')}\x1b[0m",
+        stderr=result.stderr.replace(" or ", "\n or "),
+    )
+    observed = oracle.observe("refusal", lambda: result, unchanged=True)
+    _result(observed, "refusal", success=False, refusal_target=target)
+    oracle.evaluated("outcome.status_matches_state", "transaction.failed_command_preserves_state")
+    oracle.assert_finished({"refusal"})
+    assert oracle.evaluations[-1][1][-2:] == (
+        "outcome.status_matches_state",
+        "transaction.failed_command_preserves_state",
+    )
+
+
+@pytest.mark.parametrize("target", ("copilot-app", "copilot-cowork"))
+@pytest.mark.parametrize(
+    "fault",
+    (
+        "usage",
+        "signal",
+        "traceback",
+        "wrong-status",
+        "success-status",
+        "boolean-status",
+        "float-status",
+        "wrong-target",
+        "missing-target",
+        "missing-diagnostic",
+        "missing-recovery",
+    ),
+)
+def test_refusal_receipt_rejects_false_credit(tmp_path: Path, target: str, fault: str) -> None:
+    """An unchanged filesystem cannot turn an unrelated failure into refusal credit."""
+    from tests.integration.test_primitive_target_covering_array import _result
+
+    oracle = _oracle(tmp_path)
+    root = oracle.roots["project"]
+    result = _refusal_receipt(root, target)
+    if fault in {"usage", "signal", "traceback"}:
+        code, output = {
+            "usage": (2, "Usage: apm install [OPTIONS]\nError: No such option: --bad"),
+            "signal": (-9, ""),
+            "traceback": (1, "Traceback (most recent call last):\nRuntimeError: unrelated crash"),
+        }[fault]
+        result = replace(result, returncode=code, stdout=output, stderr="")
+    elif fault in {"wrong-status", "success-status"}:
+        result = replace(result, returncode=2 if fault == "wrong-status" else 0)
+    elif fault in {"boolean-status", "float-status"}:
+        result = replace(result, returncode=True if fault == "boolean-status" else 1.0)
+    elif fault == "wrong-target":
+        other = "copilot-cowork" if target == "copilot-app" else "copilot-app"
+        result = _refusal_receipt(root, other)
+    elif fault == "missing-diagnostic":
+        result = replace(result, stdout="")
+    elif fault == "missing-recovery":
+        result = replace(result, stderr="")
+    before = oracle.capture()
+    observed = oracle.observe("refusal", lambda: result, unchanged=True)
+    with pytest.raises(AssertionError, match="refusal:"):
+        _result(
+            observed,
+            "refusal",
+            success=False,
+            refusal_target=None if fault == "missing-target" else target,
+        )
+        oracle.evaluated(
+            "outcome.status_matches_state", "transaction.failed_command_preserves_state"
+        )
+    assert oracle.evaluations == [] and oracle.pending == "refusal"
+    assert_snapshot_set_unchanged(before, oracle.capture())
+
+
+def test_refusal_receipt_cannot_excuse_any_root_write(tmp_path: Path) -> None:
+    """Even a correctly attributed refusal cannot modify an unowned neighboring file."""
+    oracle = _oracle(tmp_path)
+    neighbor = oracle.roots["user"] / "unrelated.txt"
+    neighbor.write_bytes(b"unowned\n")
+    receipt = _refusal_receipt(oracle.roots["project"], "copilot-app")
+
+    def corrupt() -> CommandResult:
+        neighbor.write_bytes(b"corrupted\n")
+        return receipt
+
+    with pytest.raises(AssertionError, match="changed"):
+        oracle.observe("refusal", corrupt, unchanged=True)
+    assert oracle.evaluations == []
+
+
+def test_refusal_validation_uses_authored_target_before_credit() -> None:
+    """The real action must pass its row target and retain full-root no-write checks."""
+    from tests.integration import test_primitive_target_covering_array as execution
+
+    module = ast.parse(Path(execution.__file__).read_text(encoding="utf-8"))
+    outer = next(
+        (node for node in module.body if getattr(node, "name", "") == "_execute_row_body"), None
+    )
+    assert isinstance(outer, ast.FunctionDef), "Missing isolated row body"
+    action = next(node for node in outer.body if getattr(node, "name", "") == "action")
+    calls = [node for node in ast.walk(action) if isinstance(node, ast.Call)]
+    validation = next(
+        (node for node in calls if isinstance(node.func, ast.Name) and node.func.id == "_result"),
+        None,
+    )
+    assert validation is not None, "CLI action omitted receipt validation"
+    keywords = {keyword.arg: keyword.value for keyword in validation.keywords}
+    assert "refusal_target" in keywords, "Refusal validation omitted the authored target"
+    expected = ast.parse("row.targets[0] if row.dynamic_refusal else None", mode="eval").body
+    assert ast.dump(keywords["refusal_target"]) == ast.dump(expected)
+    credit = next(
+        node
+        for node in calls
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "evaluated"
+    )
+    observation = next(
+        node
+        for node in calls
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "observe"
+    )
+    assert observation.lineno < validation.lineno < credit.lineno
+    observation_keywords = {keyword.arg: keyword.value for keyword in observation.keywords}
+    assert "unchanged" in observation_keywords, "Action omitted the no-write observation"
+    assert ast.dump(observation_keywords["unchanged"]) == ast.dump(
+        ast.Name(id="unchanged", ctx=ast.Load())
+    ), "Action did not forward the no-write requirement"
+    refusal = next(
+        node
+        for node in ast.walk(outer)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "action"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "refusal"
+    )
+    refusal_keywords = {keyword.arg: keyword.value for keyword in refusal.keywords}
+    for name, value in (("success", False), ("unchanged", True)):
+        assert name in refusal_keywords, f"Refusal omitted {name}"
+        assert isinstance(refusal_keywords[name], ast.Constant)
+        assert refusal_keywords[name].value is value
+
+
 def _audit_receipt(root: Path, *, clean: bool, hash_failure: bool = True) -> CommandResult:
     """Author public --ci JSON independently of the production result serializer."""
     path = ".github/prompts/task.prompt.md"
@@ -762,11 +1145,11 @@ def test_audit_validation_precedes_law_credit_at_shared_action_boundary() -> Non
         (
             node
             for node in module.body
-            if isinstance(node, ast.FunctionDef) and node.name == "_execute_row"
+            if isinstance(node, ast.FunctionDef) and node.name == "_execute_row_body"
         ),
         None,
     )
-    assert isinstance(outer, ast.FunctionDef), "Missing _execute_row action boundary"
+    assert isinstance(outer, ast.FunctionDef), "Missing _execute_row_body action boundary"
     action = next(
         (
             node
@@ -1050,9 +1433,9 @@ def test_real_actions_validate_coowner_before_credit() -> None:
 
     module = ast.parse(Path(execution.__file__).read_text(encoding="utf-8"))
     outer = next(
-        (node for node in module.body if getattr(node, "name", "") == "_execute_row"), None
+        (node for node in module.body if getattr(node, "name", "") == "_execute_row_body"), None
     )
-    assert isinstance(outer, ast.FunctionDef), "Missing _execute_row action boundary"
+    assert isinstance(outer, ast.FunctionDef), "Missing _execute_row_body action boundary"
     action = next((node for node in outer.body if getattr(node, "name", "") == "action"), None)
     assert isinstance(action, ast.FunctionDef), "Missing real CLI action function"
     calls = {
@@ -1216,8 +1599,6 @@ def _materialize_instruction_state(
 def test_copilot_source_setup_uses_isolated_git_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ambient_identity: str
 ) -> None:
-    from collections.abc import Mapping
-
     from tests.utils.local_git_repository import LocalGitRepositoryFactory
 
     ambient_config = tmp_path / "ambient.gitconfig"
@@ -1479,7 +1860,7 @@ def test_real_action_validates_instruction_survivor_before_credit() -> None:
 
     module = ast.parse(Path(execution.__file__).read_text(encoding="utf-8"))
     outer = next(
-        (node for node in module.body if getattr(node, "name", "") == "_execute_row"), None
+        (node for node in module.body if getattr(node, "name", "") == "_execute_row_body"), None
     )
     assert isinstance(outer, ast.FunctionDef)
     action = next((node for node in outer.body if getattr(node, "name", "") == "action"), None)
