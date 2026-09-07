@@ -7,6 +7,7 @@ import re
 import shutil
 import stat
 from collections.abc import Callable, Iterable
+from copy import copy
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -1459,12 +1460,12 @@ class SkillIntegrator(BaseIntegrator):
         """
         enforce_agent_plugin_deployment_boundary(package_info)
 
-        # Check if package type allows skill installation (T4 routing)
-        # SKILL and HYBRID -> install as skill
-        # INSTRUCTIONS and PROMPTS -> skip skill installation
+        # Canonicalize only the root; preserve descendant links and caller metadata.
+        package_info = copy(package_info)
+        package_info.install_path = package_info.install_path.resolve()
+
         if not should_install_skill(package_info):
-            # Even non-skill packages may ship sub-skills under .apm/skills/.
-            # Promote them so Copilot can discover them independently.
+            # Non-skill packages may still ship sub-skills under .apm/skills/.
             sub_skills_count, sub_deployed = self._promote_sub_skills_standalone(
                 package_info,
                 project_root,
