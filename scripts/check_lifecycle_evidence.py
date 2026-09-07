@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -16,12 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.lifecycle_contracts import (  # noqa: E402
-    LEDGER,
     EvidenceError,
+    candidate_contracts,
     command_inventory,
     git,
-    load_ledger,
-    select_contracts,
     validate_execution,
 )
 
@@ -31,6 +30,16 @@ LIMITATIONS = [
     "Bounded source-Python trajectories do not establish packaged or exhaustive parity.",
     "A pr-lane pending report is not shipping evidence; execute lane full independently.",
 ]
+
+
+class CompletionOutputConflict(EvidenceError):
+    """The proposed independent report would overwrite the driver's inputs."""
+
+
+def _same_file(left: Path, right: Path) -> bool:
+    return left.resolve() == right.resolve() or (
+        left.exists() and right.exists() and left.samefile(right)
+    )
 
 
 def source_profile(root: Path) -> tuple[Path | None, dict[str, Any]]:
@@ -48,6 +57,7 @@ def source_profile(root: Path) -> tuple[Path | None, dict[str, Any]]:
             raise EvidenceError("Installed apm entrypoint is not this Python environment")
     return executable, {
         "kind": "source-python",
+        "source_root": str(root / "src/apm_cli"),
         "executable": str(executable) if executable else None,
         "executable_sha256": fingerprint(executable) if executable else None,
         "python": str(Path(sys.executable).resolve()),
@@ -73,6 +83,53 @@ def candidate(root: Path, base: str, head: str) -> dict[str, str]:
     }
 
 
+def validate_completion(path: Path, native: dict[str, Any], output: Path) -> None:
+    """Compare a driver's summary to independent execution, never use it as proof."""
+    if _same_file(output, path):
+        raise CompletionOutputConflict("Independent report must not overwrite completion")
+    completion = json.loads(path.read_text(encoding="utf-8"))
+    summary = completion["lifecycle_evidence"]
+    if not isinstance(summary, dict):
+        raise EvidenceError("Malformed lifecycle completion summary")
+    report_path = summary.get("report_path")
+    if not isinstance(report_path, str) or not report_path.strip():
+        raise EvidenceError("Completion requires its driver's report_path")
+    driver_path = Path(report_path)
+    if not driver_path.is_absolute():
+        driver_path = path.parent / driver_path
+    if _same_file(output, driver_path):
+        raise CompletionOutputConflict("Independent report must not overwrite driver evidence")
+    if type(summary.get("version")) is not int:
+        raise EvidenceError("Malformed lifecycle completion version")
+    if summary["version"] != 1 or summary.get("lane") != "full":
+        raise EvidenceError("Completion requires version 1 full-lane evidence")
+    if summary.get("status") not in {"passed", "not_applicable"}:
+        raise EvidenceError("Completion requires passed or not_applicable evidence")
+    fields = {
+        "version": "version",
+        "base_sha": "base",
+        "head_sha": "head",
+        "tested_tree": "tested_tree",
+        "lane": "lane",
+        "status": "status",
+    }
+    for claim, field in fields.items():
+        if summary.get(claim) != native.get(field):
+            raise EvidenceError(f"Completion disagrees with fresh execution: {claim}")
+    if "head_sha" in completion and completion["head_sha"] != native["head"]:
+        raise EvidenceError("Completion top-level head_sha is stale")
+    raw = driver_path.read_bytes()
+    if summary.get("report_sha256") != hashlib.sha256(raw).hexdigest():
+        raise EvidenceError("Completion driver report digest mismatch")
+    driver = json.loads(raw)
+    if (
+        not isinstance(driver, dict)
+        or type(driver.get("version")) is not int
+        or any(driver.get(field) != native.get(field) for field in fields.values())
+    ):
+        raise EvidenceError("Completion driver report header disagrees with fresh execution")
+
+
 def execute(args: argparse.Namespace) -> dict[str, Any]:
     """Generate native evidence from this process's own fresh pytest execution."""
     identity = candidate(ROOT, args.base, args.head)
@@ -88,21 +145,9 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     }
     try:
         inventory = command_inventory()
-        base_text = git(ROOT, "show", f"{identity['base']}:{LEDGER}")
-        base = load_ledger(base_text)
-        head = load_ledger((ROOT / LEDGER).read_text(encoding="utf-8"))
-        changed = set(
-            git(
-                ROOT,
-                "diff",
-                "--name-only",
-                "--no-renames",
-                "-z",
-                identity["base"],
-                identity["head"],
-            ).split("\0")
-        ) - {""}
-        contracts = select_contracts(base, head, changed, inventory)
+        changed, contracts = candidate_contracts(
+            ROOT, identity["base"], identity["head"], inventory
+        )
         report["contracts"] = [contract["id"] for contract in contracts]
         report["command_inventory"] = sorted(inventory)
         report["changed_paths"] = sorted(changed)
@@ -126,7 +171,18 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
 
         executable, report["profile"] = source_profile(ROOT)
         nodeids = sorted({witness["nodeid"] for witness in witnesses})
-        plugin = LifecycleEvidencePlugin(nodeids, executable)
+        contexts = {
+            nodeid: {
+                transition.get("context", "initial")
+                for witness in witnesses
+                if witness["nodeid"] == nodeid
+                for transition in witness["transitions"]
+            }
+            for nodeid in nodeids
+        }
+        plugin = LifecycleEvidencePlugin(
+            nodeids, executable, contexts, Path(report["profile"]["source_root"])
+        )
         if executable:
             os.environ["APM_BINARY_PATH"] = str(executable)
         else:
@@ -160,11 +216,25 @@ def main() -> int:
     parser.add_argument("--head", required=True)
     parser.add_argument("--lane", choices=("pr", "full"), required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--completion", type=Path)
     args = parser.parse_args()
     if args.report.resolve().is_relative_to(ROOT):
         parser.error("--report must be outside the candidate checkout")
+    if args.completion and args.lane != "full":
+        parser.error("--completion requires --lane full")
     try:
         report = execute(args)
+        if args.completion:
+            try:
+                validate_completion(args.completion, report, args.report)
+            except CompletionOutputConflict as exc:
+                print(f"Completion verification failed: {exc}")
+                return 1
+            except (OSError, KeyError, TypeError, ValueError) as exc:
+                report["status"] = "blocked"
+                report["error"] = (
+                    f"{report.get('error', '')} Completion verification failed: {exc}"
+                ).strip()
     except (EvidenceError, subprocess.CalledProcessError) as exc:
         report = {
             "version": 1,

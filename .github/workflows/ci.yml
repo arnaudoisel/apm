@@ -515,7 +515,9 @@ jobs:
   lifecycle-smoke:
     name: Lifecycle Smoke (Linux)
     runs-on: ubuntu-24.04
-    timeout-minutes: 6
+    # Five deterministic witnesses alone measured 201s; leave bounded room for
+    # the deferred-smoke remainder and dependency/runtime setup.
+    timeout-minutes: 12
     permissions:
       contents: read
 
@@ -550,10 +552,13 @@ jobs:
     - name: Run required lifecycle smoke subset
       env:
         APM_E2E_TESTS: "1"
+        LIFECYCLE_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        LIFECYCLE_HEAD: ${{ github.sha }}
       run: |
-        uv run --extra dev pytest -p no:cacheprovider -q --strict-markers \
+        uv run --extra dev python -m pytest -p no:cacheprovider -p tests.utils.lifecycle_evidence -q --strict-markers \
           -n 2 --dist loadgroup \
-          -m 'lifecycle_smoke and not lifecycle_merge_group' tests/integration
+          -m 'lifecycle_smoke and not lifecycle_merge_group' tests/integration \
+          --lifecycle-defer-base "$LIFECYCLE_BASE" --lifecycle-defer-head "$LIFECYCLE_HEAD"
 
     - name: Execute changed lifecycle contracts
       env:

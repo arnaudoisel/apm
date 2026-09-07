@@ -134,6 +134,10 @@ def validate_contracts(
             _paths([nodeid.split("::")[0]])
             _require(len(witness["transitions"]) >= 2, f"{nodeid}: missing trajectory")
             for transition in witness["transitions"]:
+                _require(
+                    transition.get("context", "initial") in {"initial", "APM_HOME"},
+                    f"{nodeid}: unsupported command context",
+                )
                 _require(transition["command"] in inventory, f"{nodeid}: unknown command")
                 _require(type(transition["returncode"]) is int, f"{nodeid}: invalid exit status")
                 _require(
@@ -277,6 +281,18 @@ def select_contracts(
     return [current[key] for key in sorted(selected)]
 
 
+def candidate_contracts(
+    root: Path, base: str, head: str, inventory: dict[str, click.Command]
+) -> tuple[set[str], list[dict[str, Any]]]:
+    """One diff-to-obligation authority for smoke deferral and native execution."""
+    previous = load_ledger(git(root, "show", f"{base}:{LEDGER}"))
+    current = load_ledger((root / LEDGER).read_text(encoding="utf-8"))
+    changed = set(
+        git(root, "diff", "--name-only", "--no-renames", "-z", base, head).split("\0")
+    ) - {""}
+    return changed, select_contracts(previous, current, changed, inventory)
+
+
 def validate_execution(witness: dict[str, Any], evidence: dict[str, Any]) -> None:
     """Check actual collection, phases, model execution and persistent trajectory."""
     nodeid = witness["nodeid"]
@@ -301,13 +317,34 @@ def validate_execution(witness: dict[str, Any], evidence: dict[str, Any]) -> Non
         ]
 
     # One trajectory cannot be assembled out of independent temporary projects.
-    def trajectory(event: dict[str, Any]) -> tuple[str, str, int | None]:
+    def trajectory(event: dict[str, Any]) -> tuple[str, int | None]:
         _require(event.get("roots"), f"{nodeid}: missing durable-root identity")
-        return event["cwd"], json.dumps(event["roots"], sort_keys=True), event.get("model")
+        environment = event.get("environment")
+        _require(
+            isinstance(environment, dict)
+            and set(environment) == set(event["roots"]) - {"workspace"}
+            and all(isinstance(value, str) and value for value in environment.values()),
+            f"{nodeid}: missing or inconsistent environment identity",
+        )
+        context = event.get("context", "initial")
+        _require(context in {"initial", "APM_HOME"}, f"{nodeid}: unknown observed context")
+        root = "workspace" if context == "initial" else context
+        _require(
+            event["cwd"] == event["roots"].get(root),
+            f"{nodeid}: cwd is outside its observed context",
+        )
+        return (
+            json.dumps([event["roots"], environment], sort_keys=True),
+            event.get("model"),
+        )
 
     def matches(event: dict[str, Any], expected: dict[str, Any]) -> bool:
         return (
-            event["command"] == expected["command"]
+            event["cwd"]
+            == event["roots"].get(
+                "workspace" if expected.get("context", "initial") == "initial" else "APM_HOME"
+            )
+            and event["command"] == expected["command"]
             and event["returncode"] == expected["returncode"]
             and all(arg in event["args"] for arg in expected["argv_contains"])
             and (

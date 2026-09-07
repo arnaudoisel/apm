@@ -4,17 +4,25 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import click
 import pytest
 
-from scripts.check_lifecycle_evidence import candidate, execute, main, source_profile
+from scripts.check_lifecycle_evidence import (
+    candidate,
+    execute,
+    main,
+    source_profile,
+    validate_completion,
+)
 from scripts.lifecycle_contracts import (
     EvidenceError,
     command_inventory,
@@ -24,7 +32,7 @@ from scripts.lifecycle_contracts import (
     validate_contracts,
     validate_execution,
 )
-from tests.utils.lifecycle_evidence import LifecycleEvidencePlugin
+from tests.utils.lifecycle_evidence import LifecycleEvidencePlugin, snapshot
 
 pytestmark = pytest.mark.component
 pytest_plugins = ["pytester"]
@@ -91,6 +99,7 @@ def _evidence() -> dict[str, Any]:
                 "returncode": 0,
                 "cwd": "/fixture",
                 "roots": {"HOME": "/fixture/home", "workspace": "/fixture"},
+                "environment": {"HOME": "/fixture/home"},
                 "model": 1,
                 "before": before,
                 "after": after,
@@ -199,6 +208,7 @@ def test_incomplete_contract_fails(mutation: str) -> None:
         "roots",
         "continuity",
         "model-splice",
+        "environment",
     ],
 )
 def test_execution_obligations_fail_closed(mutation: str) -> None:
@@ -232,6 +242,8 @@ def test_execution_obligations_fail_closed(mutation: str) -> None:
     elif mutation == "model-splice":
         evidence["models"] = 2
         evidence["events"][1]["model"] = 2
+    elif mutation == "environment":
+        del evidence["events"][1]["environment"]
     else:
         evidence = {"status": "passed"}
     with pytest.raises(EvidenceError):
@@ -246,6 +258,213 @@ def test_intentional_fixture_mutation_requires_reviewed_preparation() -> None:
         validate_execution(witness, evidence)
     witness["transitions"][1]["preparation"] = "User tampers with deployed bytes before audit."
     validate_execution(witness, evidence)
+
+
+def test_reviewed_apm_home_context_retains_one_trajectory() -> None:
+    witness = _ledger()["lifecycle_contracts"][0]["witnesses"][1]
+    evidence = _evidence()
+    for event in evidence["events"]:
+        event["roots"]["APM_HOME"] = "/fixture/home/.apm"
+        event["environment"]["APM_HOME"] = "/fixture/home/.apm"
+    evidence["events"][1].update(cwd="/fixture/home/.apm", context="APM_HOME")
+    with pytest.raises(EvidenceError, match="trajectory"):
+        validate_execution(witness, evidence)
+    witness["transitions"][1]["context"] = "APM_HOME"
+    validate_execution(witness, evidence)
+    evidence["events"][1]["cwd"] = "/fixture/unrelated"
+    with pytest.raises(EvidenceError, match="outside its observed context"):
+        validate_execution(witness, evidence)
+
+
+def test_domain_keeps_snapshot_roots_stable_across_physical_apm_home(
+    tmp_path: Path,
+) -> None:
+    caller = tmp_path / "caller"
+    home = tmp_path / "home"
+    caller.mkdir()
+    (home / ".apm").mkdir(parents=True)
+    env = {
+        "HOME": str(home),
+        "APM_HOME": str(home / ".apm"),
+        "CLAUDE_CONFIG_DIR": str(tmp_path / "claude"),
+        "HERMES_HOME": str(tmp_path / "hermes"),
+    }
+    plugin = LifecycleEvidencePlugin(["test"], None, {"test": {"APM_HOME"}})
+    plugin.active = "test"
+    initial, _, first_context = plugin._domain(caller, env)
+    before = snapshot(initial)
+    global_roots, _, context = plugin._domain(home / ".apm", env)
+    assert first_context == "initial" and context == "APM_HOME"
+    assert global_roots == initial
+    assert snapshot(global_roots) == before
+    for key in ("CLAUDE_CONFIG_DIR", "HERMES_HOME"):
+        root = Path(env[key])
+        root.mkdir()
+        (root / "sentinel").write_text("external target bytes", encoding="ascii")
+        assert snapshot(global_roots) != before
+        before = snapshot(global_roots)
+    with pytest.raises(EvidenceError, match="Unreviewed"):
+        plugin._domain(tmp_path / "unrelated", env)
+    for key in ("HOME", "APM_HOME"):
+        with pytest.raises(EvidenceError, match="durable roots changed"):
+            plugin._domain(caller, {**env, key: str(tmp_path / "other")})
+    undeclared = LifecycleEvidencePlugin(["test"], None)
+    undeclared.active = "test"
+    undeclared._domain(caller, env)
+    with pytest.raises(EvidenceError, match="Undeclared"):
+        undeclared._domain(home / ".apm", env)
+
+
+def test_domain_does_not_splice_distinct_hypothesis_instances(tmp_path: Path) -> None:
+    plugin = LifecycleEvidencePlugin(["test"], None)
+    plugin.active, plugin.model_run = "test", 1
+    first, _, _ = plugin._domain(tmp_path / "first/caller", {"HOME": str(tmp_path / "first/home")})
+    second, _, _ = plugin._domain(
+        tmp_path / "second/caller", {"HOME": str(tmp_path / "second/home")}
+    )
+    assert first != second
+    witness = _ledger()["lifecycle_contracts"][0]["witnesses"][1]
+    evidence = _evidence()
+    for event, roots in zip(evidence["events"], (first, second), strict=True):
+        event.update(roots=roots, cwd=roots["workspace"])
+    with pytest.raises(EvidenceError, match="trajectory"):
+        validate_execution(witness, evidence)
+
+
+def test_child_source_probe_rejects_old_checkout_even_when_cli_would_pass(
+    tmp_path: Path,
+) -> None:
+    old = tmp_path / "old"
+    package = old / "apm_cli"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="ascii")
+    (package / "cli.py").write_text(
+        "if __name__ == '__main__':\n    print('expected-success')\n", encoding="ascii"
+    )
+    env = {**os.environ, "PYTHONPATH": str(old), "HOME": str(tmp_path / "home")}
+    result = subprocess.run(
+        [sys.executable, "-m", "apm_cli.cli", "--version"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0 and result.stdout.strip() == "expected-success"
+    plugin = LifecycleEvidencePlugin(["test"], None)
+    assert plugin.candidate_source != package
+    with pytest.raises(EvidenceError, match="Child source identity"):
+        plugin._source_identity(tmp_path, env, 10)
+    good = {**env, "PYTHONPATH": str(plugin.candidate_source.parent)}
+    assert plugin._source_identity(tmp_path, good, 10)["package"] == str(plugin.candidate_source)
+    with pytest.raises(EvidenceError, match="Child source identity"):
+        plugin._source_identity(tmp_path, env, 10)
+
+
+@pytest.mark.parametrize("has_contract", [False, True])
+def test_smoke_deferral_leaves_proof_to_fresh_native_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, has_contract: bool
+) -> None:
+    from scripts import check_lifecycle_evidence as gate
+    from tests.utils import lifecycle_evidence as observer
+
+    contract = _ledger()["lifecycle_contracts"][0]
+    deferred = contract["witnesses"][0]
+    removed = []
+    config = SimpleNamespace(
+        rootpath=tmp_path,
+        getoption=lambda name: "base" if name.endswith("base") else "head",
+        hook=SimpleNamespace(pytest_deselected=lambda items: removed.extend(items)),
+    )
+    monkeypatch.setattr(gate, "candidate", lambda *args: {"base": "base", "head": "head"})
+    monkeypatch.setattr(
+        observer, "candidate_contracts", lambda *args: (set(), [contract] if has_contract else [])
+    )
+    items = [SimpleNamespace(nodeid=w["nodeid"]) for w in contract["witnesses"]]
+    items.append(SimpleNamespace(nodeid="tests/test_unrelated.py::test_other"))
+    observer.pytest_collection_modifyitems(config, items)
+    assert len(removed) == int(has_contract)
+    assert any("unrelated" in item.nodeid for item in items)
+    assert any("test_generated" in item.nodeid for item in items)
+    if has_contract:
+        assert removed[0].nodeid == deferred["nodeid"]
+        with pytest.raises(EvidenceError, match="not collected"):
+            validate_execution(deferred, {})
+        failed = _evidence()
+        failed["phases"]["call"] = "failed"
+        with pytest.raises(EvidenceError, match="must pass"):
+            validate_execution(deferred, failed)
+
+
+def test_smoke_deferral_rejects_stale_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import check_lifecycle_evidence as gate
+    from tests.utils import lifecycle_evidence as observer
+
+    config = SimpleNamespace(rootpath=tmp_path, getoption=lambda _name: "stale")
+
+    def reject(*args: object) -> None:
+        raise EvidenceError("Requested head is not the checked-out candidate")
+
+    monkeypatch.setattr(gate, "candidate", reject)
+    with pytest.raises(pytest.UsageError, match="checked-out candidate"):
+        observer.pytest_collection_modifyitems(config, [])
+
+
+def test_smoke_plugin_loads_before_collection_from_repository() -> None:
+    from scripts.check_lifecycle_evidence import ROOT
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "tests.utils.lifecycle_evidence",
+            "--help",
+        ],
+        cwd=ROOT,
+        env={key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--lifecycle-defer-base" in result.stdout
+    assert "--lifecycle-defer-head" in result.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Installed Unix launcher import-path control")
+def test_source_probe_distinguishes_launcher_and_module_search_paths(tmp_path: Path) -> None:
+    package = tmp_path / "apm_cli"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="ascii")
+    (package / "cli.py").write_text(
+        "if __name__ == '__main__':\n    print('shadow-cli')\n", encoding="ascii"
+    )
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"PYTHONPATH", "PYTHONSAFEPATH"}
+    }
+    plugin = LifecycleEvidencePlugin(["test"], _launcher())
+    assert plugin.executable is not None
+    launched = subprocess.run(
+        [str(plugin.executable), "--version"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert launched.returncode == 0 and "shadow-cli" not in launched.stdout
+    assert plugin._source_identity(tmp_path, env, 10, (str(plugin.executable),))["package"] == str(
+        plugin.candidate_source
+    )
+    with pytest.raises(EvidenceError, match="Child source identity"):
+        plugin._source_identity(tmp_path, env, 10, (sys.executable, "-m", "apm_cli.cli"))
 
 
 def test_inventory_uses_recursive_registrations_and_aliases(
@@ -422,6 +641,190 @@ def test_cli_rejects_in_tree_receipts(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(SystemExit) as exc:
         main()
     assert exc.value.code == 2
+
+
+def _completion(tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    native = {
+        "version": 1,
+        "base": "a" * 40,
+        "head": "b" * 40,
+        "tested_tree": "c" * 40,
+        "lane": "full",
+        "status": "passed",
+    }
+    driver = tmp_path / "driver.json"
+    driver.write_text(json.dumps(native), encoding="ascii")
+    data = {
+        "head_sha": native["head"],
+        "lifecycle_evidence": {
+            "version": 1,
+            "base_sha": native["base"],
+            "head_sha": native["head"],
+            "tested_tree": native["tested_tree"],
+            "lane": "full",
+            "status": "passed",
+            "report_path": str(driver),
+            "report_sha256": hashlib.sha256(driver.read_bytes()).hexdigest(),
+        },
+    }
+    completion = tmp_path / "completion.json"
+    completion.write_text(json.dumps(data), encoding="ascii")
+    return completion, data, native
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "base_sha",
+        "head_sha",
+        "tested_tree",
+        "lane",
+        "status",
+        "version",
+        "report_sha256",
+        "report_path",
+        "top_head",
+        "header",
+        "malformed",
+        "missing",
+    ],
+)
+def test_completion_rejects_stale_or_malformed_claims(tmp_path: Path, mutation: str) -> None:
+    path, data, native = _completion(tmp_path)
+    output = tmp_path / "independent.json"
+    validate_completion(path, native, output)
+    summary = data["lifecycle_evidence"]
+    if mutation in {"base_sha", "head_sha", "tested_tree", "report_sha256"}:
+        summary[mutation] = "d" * len(summary[mutation])
+    elif mutation == "lane":
+        summary["lane"] = "pr"
+    elif mutation == "status":
+        summary["status"] = "pending"
+    elif mutation == "version":
+        summary["version"] = True
+    elif mutation == "report_path":
+        summary["report_path"] = ""
+    elif mutation == "top_head":
+        data["head_sha"] = "d" * 40
+    elif mutation == "header":
+        driver = Path(summary["report_path"])
+        driver.write_text(json.dumps({**native, "tested_tree": "d" * 40}), encoding="ascii")
+        summary["report_sha256"] = hashlib.sha256(driver.read_bytes()).hexdigest()
+    elif mutation == "malformed":
+        data["lifecycle_evidence"] = []
+    else:
+        del data["lifecycle_evidence"]
+    path.write_text(json.dumps(data), encoding="ascii")
+    with pytest.raises((EvidenceError, KeyError, TypeError)):
+        validate_completion(path, native, output)
+
+
+def test_completion_accepts_resolved_summary_and_protects_driver_bytes(tmp_path: Path) -> None:
+    path, data, native = _completion(tmp_path)
+    del data["head_sha"]
+    data["lifecycle_evidence"]["report_path"] = "driver.json"
+    path.write_text(json.dumps(data), encoding="ascii")
+    validate_completion(path, native, tmp_path / "independent.json")
+    for output in (path, tmp_path / "driver.json"):
+        before = output.read_bytes()
+        with pytest.raises(EvidenceError, match="overwrite"):
+            validate_completion(path, native, output)
+        assert output.read_bytes() == before
+    hardlink = tmp_path / "driver-hardlink.json"
+    hardlink.hardlink_to(tmp_path / "driver.json")
+    with pytest.raises(EvidenceError, match="overwrite"):
+        validate_completion(path, native, hardlink)
+
+
+def test_completion_always_executes_native_gate_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import check_lifecycle_evidence as gate
+
+    completion, _data, native = _completion(tmp_path)
+    calls = []
+
+    def fresh(args: argparse.Namespace) -> dict[str, Any]:
+        calls.append(args.lane)
+        return dict(native)
+
+    monkeypatch.setattr(gate, "execute", fresh)
+    output = tmp_path / "independent.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "gate",
+            "--base",
+            native["base"],
+            "--head",
+            native["head"],
+            "--lane",
+            "full",
+            "--report",
+            str(output),
+            "--completion",
+            str(completion),
+        ],
+    )
+    assert main() == 0
+    assert calls == ["full"]
+    completion.write_text("not json", encoding="ascii")
+    assert main() == 1
+    assert calls == ["full", "full"]
+    assert json.loads(output.read_text())["status"] == "blocked"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "gate",
+            "--base",
+            native["base"],
+            "--head",
+            native["head"],
+            "--lane",
+            "pr",
+            "--report",
+            str(output),
+            "--completion",
+            str(completion),
+        ],
+    )
+    with pytest.raises(SystemExit):
+        main()
+    assert calls == ["full", "full"]
+
+
+def test_completion_preserves_driver_even_when_claims_are_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import check_lifecycle_evidence as gate
+
+    completion, data, native = _completion(tmp_path)
+    driver = Path(data["lifecycle_evidence"]["report_path"])
+    data["lifecycle_evidence"]["status"] = "pending"
+    completion.write_text(json.dumps(data), encoding="ascii")
+    original = driver.read_bytes()
+    monkeypatch.setattr(gate, "execute", lambda _args: dict(native))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "gate",
+            "--base",
+            native["base"],
+            "--head",
+            native["head"],
+            "--lane",
+            "full",
+            "--report",
+            str(driver),
+            "--completion",
+            str(completion),
+        ],
+    )
+    assert main() == 1
+    assert driver.read_bytes() == original
 
 
 @pytest.mark.parametrize("lane,status", [("pr", "pending"), ("full", "passed")])
