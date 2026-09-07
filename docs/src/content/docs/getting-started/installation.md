@@ -46,7 +46,21 @@ curl -sSL https://aka.ms/apm-unix | sh
 irm https://aka.ms/apm-windows | iex
 ```
 
-The installer automatically detects your platform (macOS/Linux/Windows, Intel/ARM), downloads the latest binary, and adds `apm` to your `PATH`.
+Fresh ordinary-user Unix native installs use `~/.local/bin/apm` (launcher) and `~/.local/lib/apm` (bundle). The installer never runs `sudo`. For bash, zsh, and fish, it automatically configures future shells when the install path and profile files are safe. Open a new shell after install.
+
+If the installer skips profile edits, it prints an exact command for the current shell. You can also activate the default install manually:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+For fish:
+
+```fish
+set -gx PATH "$HOME/.local/bin" $PATH
+```
+
+Existing installs keep their [original destinations](#unix-install-ownership-and-migration).
 
 On Windows, the installer adds both `current` and `bin` to `PATH`, with the stable `current\apm.exe` first. Bare `apm` calls therefore resolve the real executable in native shells, Git Bash, and process APIs such as Python `subprocess.run(["apm", ...])`; `bin\apm.cmd` remains available for compatibility.
 
@@ -58,8 +72,14 @@ On Windows, the installer adds both `current` and `bin` to `PATH`, with the stab
 # Install a specific version
 curl -sSL https://aka.ms/apm-unix | sh -s -- @v1.2.3
 
-# Custom install directory
-curl -sSL https://aka.ms/apm-unix | APM_INSTALL_DIR=$HOME/.local/bin sh
+# Install under one root (launcher: $HOME/.local/bin, bundle: $HOME/.local/lib/apm)
+curl -sSL https://aka.ms/apm-unix | sh -s -- --prefix "$HOME/.local"
+
+# Custom directory for a fresh install (bundle: $HOME/tools/lib/apm)
+curl -sSL https://aka.ms/apm-unix | APM_INSTALL_DIR="$HOME/tools/bin" sh
+
+# Opt out of automatic shell PATH setup
+curl -sSL https://aka.ms/apm-unix | APM_NO_MODIFY_PATH=1 sh
 
 # Air-gapped / GitHub Enterprise mirror
 GITHUB_URL=https://github.corp.com VERSION=v1.2.3 sh install.sh
@@ -110,8 +130,10 @@ jobs:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `APM_INSTALL_DIR` | `/usr/local/bin` (Unix) / `%LOCALAPPDATA%\Programs\apm\bin` (Windows) | Directory for the Unix `apm` symlink or Windows `apm.cmd` shim. On Windows, the installer also adds the sibling `current` junction containing `apm.exe` to `PATH`. |
-| `APM_LIB_DIR` | `$(dirname APM_INSTALL_DIR)/lib/apm` | *(Unix only)* Directory for the full binary bundle. Must end with `/apm` (for example, `/lib/apm`). The installer rejects shared directories (e.g. `$HOME/.local/share`) to prevent accidental data loss. |
+| `--prefix PATH` | *(unset)* | Unix `install.sh` option. Selects one root and derives `PATH/bin` for the launcher plus `PATH/lib/apm` for the bundle. Accepts both `--prefix PATH` and `--prefix=PATH`; the value must be an absolute, normalized path. Counts as explicitly setting both Unix destinations for administrator-run installs. |
+| `APM_INSTALL_DIR` | `~/.local/bin` (fresh ordinary-user Unix install) / `%LOCALAPPDATA%\Programs\apm\bin` (Windows) | Unix launcher or Windows shim directory. Unix upgrades preserve the existing destination; overrides cannot redirect them. When `--prefix` is present on Unix, this may be set only to the matching derived `PATH/bin`. |
+| `APM_LIB_DIR` | `~/.local/lib/apm` (fresh default Unix install) | Unix bundle; otherwise `lib/apm` under the install directory's parent, or preserved on upgrade. Must be absolute, end with `/apm`, and not be a symlink or shared directory. When `--prefix` is present on Unix, this may be set only to the matching derived `PATH/lib/apm`. |
+| `APM_NO_MODIFY_PATH` | *(unset)* | Unix native installer only. Set a truthy value to skip shell profile edits and persist that disabled preference after a successful native install. Unset inherits a disabled preference from the native receipt. Set `APM_NO_MODIFY_PATH=0` on a normal desktop rerun to re-enable automatic shell PATH setup. Pip fallback, CI/headless/root installs, self-update, unknown shells, unsafe profile files, and unsafe install paths never edit profiles. |
 | `GITHUB_URL` | `https://github.com` | Base GitHub URL (asset downloads **and** API host: `api.github.com` on github.com, `{GITHUB_URL}/api/v3` on GHES). Must be `https://` on Windows. |
 | `APM_REPO` | `microsoft/apm` | Repository as `owner/name` |
 | `VERSION` | *(latest)* | Pin a release tag (skips the **releases/latest** HTTP API). Must look like `v1.2.3` or `1.2.3`. |
@@ -121,6 +143,40 @@ jobs:
 | `APM_PYPI_INDEX_URL` | *(unset)* | PyPI-compatible mirror used when the installer falls back to pip. |
 | `APM_NO_DIRECT_FALLBACK` | *(unset)* | Set to `1` to fail closed when a mirror is missing or unreachable instead of using public GitHub, `aka.ms`, or PyPI. |
 | `APM_SKIP_CHECKSUM` | *(unset)* | Windows only: set to `1` to skip `.sha256` verification on **pinned** installs (emergency only). |
+
+### Unix install ownership and migration
+
+`install.sh` checks `PATH`, `$APM_INSTALL_DIR/apm`, `$APM_LIB_DIR/apm`, user-default destinations, historical `/usr/local/bin/apm`, `/opt/homebrew/bin/apm`, and `/usr/local/lib/apm/apm`, plus self-update's running binary. It recognizes a nonempty Unix bundle only when its bundle-identity entries are not symlinks: a regular `apm` file plus either a regular `.apm-installed` file or both a regular `VERSION` file and a real `_internal` directory. Discovery and pre-delete validation use this same rule; `VERSION` alone, `.apm-installed` alone, or `apm.cmd` alone never authorizes deletion. Recognized current and legacy layouts update in place, preserving their launcher and bundle destinations.
+
+Preflight requires absolute, normalized launcher and bundle destinations; the bundle must end in `/apm`. It rejects blocked shared directories, destination overlaps, and an `APM_LIB_DIR` symlink before replacement. Root must set both `APM_INSTALL_DIR` and `APM_LIB_DIR`; setting only one refuses the install instead of filling the other from a default.
+
+`--prefix PATH` is a destination selector, not a privilege flag. It derives `PATH/bin` and `PATH/lib/apm` in the same ownership/path-selection authority as the environment variables. Contradictory `APM_INSTALL_DIR` or `APM_LIB_DIR` values fail before download or writes; redundant matching values are accepted. The installer never runs `sudo`.
+
+Before removal, every existing bundle entry must be caller-owned, and every directory must be writable and searchable by the caller. A failure stops the update without removing files. Conflicting installations or destination overrides, inaccessible discovery paths, unknown/package-managed launchers, and unwritable destinations also fail with repair guidance.
+
+If a fresh install finds unrelated or unrecognized data, inspect it without deleting anything. Choose a different empty, dedicated bundle and launcher destination, or use the original owner's uninstall process.
+
+After installing the bundle and launcher, `install.sh` runs the launcher at its destination with `--version` before reporting completion, even when it is off `PATH`; failure stops with guidance to retry the same destinations or ask the installation owner to repair it.
+
+**Migration:** ask the original administrator or package manager to update system/custom installs. To migrate deliberately, uninstall through that owner first, then install fresh. Destination overrides never migrate an install. Automatic pip fallback requires a fresh ordinary-user install with neither destination variable set; existing/custom installs receive terminal owner guidance even when Python is unavailable.
+
+Pip fallback uses the selected Python 3.10+ interpreter for both `-m pip` and its `sysconfig` user scheme. If that scheme query fails, installation stops before package installation. If the installed launcher is off `PATH`, the installer prints a safely shell-quoted command for the current shell using that interpreter's actual scripts directory, including `PYTHONUSERBASE` and framework layouts. Pip fallback never modifies shell profiles or writes native shell setup policy.
+
+For native installs, automatic shell setup writes only installer-owned marked profile blocks that source generated hooks under `~/.apm/shell`. Truthy `APM_NO_MODIFY_PATH` writes no profile or hook changes and records the disabled preference only after the native binary succeeds. To re-enable after opting out, rerun a normal desktop native install with `APM_NO_MODIFY_PATH=0`. During `apm self-update`, the installer never enrolls shell setup or edits profiles/hooks.
+
+After [saving and reviewing `install.sh`](#macos--linux), select the system root explicitly. From an ordinary shell:
+
+```bash
+sudo sh ./install.sh --prefix /usr/local
+```
+
+Already root or in a container without `sudo`:
+
+```bash
+sh ./install.sh --prefix /usr/local
+```
+
+Root without both destinations, or without one `--prefix`, fails closed. The installer never elevates privileges.
 
 ### Enterprise bootstrap mirror mode
 
@@ -162,7 +218,11 @@ apm-releases/
     apm-windows-x86_64.zip.sha256
 ```
 
+Unix release assets are `apm-linux-x86_64.tar.gz`, `apm-linux-arm64.tar.gz`, `apm-darwin-x86_64.tar.gz`, and `apm-darwin-arm64.tar.gz`.
+
 `APM_NO_DIRECT_FALLBACK=1` makes missing mirror settings and unreachable mirrors hard failures. It does not replace package-install proxying; keep using `PROXY_REGISTRY_URL` and `PROXY_REGISTRY_ONLY=1` for `apm install` dependencies.
+
+Mirror-mode installs follow the same Unix shell PATH rules as normal native installs.
 
 #### What fail-closed does and does not cover
 
@@ -172,7 +232,7 @@ Homebrew and Scoop mirror support is docs-only in this v0: mirror the tap or buc
 
 ### No-egress smoke test
 
-Run this on a disposable Linux or macOS runner. It starts a local mirror, wraps both `curl` and `pip` with deny-lists for public hosts, and expects the installer to fail only after downloading the fake archive. Any request to GitHub, `aka.ms`, PyPI, Homebrew, or Scoop fails the smoke test immediately. The `pip` wrapper makes the PyPI egress path explicit: pip fallback is gated by `APM_NO_DIRECT_FALLBACK` + `APM_PYPI_INDEX_URL`, so the wrapper proves pip cannot reach public PyPI even if the binary path falls back to it.
+Run as an ordinary user on a disposable Linux or macOS runner with no existing APM installation. This starts a local mirror, denies public hosts through `curl`/`pip` wrappers, and expects failure after downloading the fake archive. The wrappers reject public fallback; pip also requires `APM_PYPI_INDEX_URL` in fail-closed mode.
 
 ```bash
 set -eu
@@ -317,14 +377,23 @@ arbitrary older versions were not end-to-end tested.
 ## pip install
 
 ```bash
-pip install apm-cli
+python3 -m pip install apm-cli
 ```
 
-Requires Python 3.10+.
+Requires Python 3.10+. Update or uninstall with the Python interpreter that owns the installation:
+
+```bash
+python3 -m pip install --upgrade apm-cli
+python3 -m pip uninstall apm-cli
+```
+
+Replace `python3` with the owning interpreter when needed. Uninstall before switching to the binary installer; `install.sh` refuses package-managed launchers.
+
+Pip installs do not edit shell profiles or write native shell setup policy. If your shell cannot find `apm`, add the Python user bin directory to `PATH` manually.
 
 ## Manual binary install
 
-Download the archive for your platform from [GitHub Releases](https://github.com/microsoft/apm/releases/latest) and install manually:
+For Windows, download the archive from [GitHub Releases](https://github.com/microsoft/apm/releases/latest). For Unix, save the installer below.
 
 #### Windows x86_64
 
@@ -341,22 +410,14 @@ Copy-Item -Path .\apm-windows-x86_64\* -Destination $installDir -Recurse -Force
 ```
 
 #### macOS / Linux
+
+Save and review the installer, then run it to retain [ownership checks](#unix-install-ownership-and-migration):
+
 ```bash
-# Example: macOS Apple Silicon
-curl -L https://github.com/microsoft/apm/releases/latest/download/apm-darwin-arm64.tar.gz | tar -xz
-sudo mkdir -p /usr/local/lib/apm
-sudo cp -r apm-darwin-arm64/* /usr/local/lib/apm/
-sudo ln -sf /usr/local/lib/apm/apm /usr/local/bin/apm
+curl -fsSL https://aka.ms/apm-unix -o install.sh
+# Review ./install.sh before running it.
+sh ./install.sh
 ```
-
-Replace `apm-darwin-arm64` with the archive name for your macOS or Linux platform:
-
-| Platform            | Archive name          |
-|---------------------|-----------------------|
-| macOS Apple Silicon | `apm-darwin-arm64`    |
-| macOS Intel         | `apm-darwin-x86_64`   |
-| Linux x86_64        | `apm-linux-x86_64`    |
-| Linux ARM64         | `apm-linux-arm64`     |
 
 ## From source (contributors)
 
@@ -398,26 +459,20 @@ apm --version
 
 Use the `PATH` for your installation method:
 
-- **Homebrew:** If `brew` works, add its `bin` directory to your shell profile:
-
-  ```bash
-  export PATH="$(brew --prefix)/bin:$PATH"
-  ```
-
-  If `brew` is also missing, complete Homebrew's shell setup first.
+- **Homebrew:** Follow the `brew shellenv` guidance from your Homebrew
+  installation. If `brew` works, make sure `$(brew --prefix)/bin` is on `PATH`.
+- **Standalone installer:** Open a new shell after a fresh native desktop
+  install; bash, zsh, and fish are configured automatically when the install
+  path and profile files are safe. The current terminal still needs manual
+  activation because a child installer process cannot mutate its parent shell.
+  If the installer skipped profile edits, run the exact shell-specific `PATH`
+  command it printed: POSIX shells use `export`, and fish uses `set -gx`.
 - **pip:** Activate the Python environment where you installed APM, or add its
-  scripts directory to `PATH`.
-- **Standalone installer:** The default is `/usr/local/bin`. Check it with:
+  scripts directory to `PATH` manually. Pip fallback never edits profiles or
+  writes native shell setup policy.
 
-  ```bash
-  echo $PATH | tr ':' '\n' | grep /usr/local/bin
-  ```
-
-  If missing, add it to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
-
-  ```bash
-  export PATH="/usr/local/bin:$PATH"
-  ```
+For native or pip script directories containing `:` or control characters, use
+the printed absolute-path command instead.
 
 If the wrong APM version runs, use `type -a apm` to find competing installations.
 Put the intended installation first on `PATH`; update it with its owning package
@@ -425,38 +480,11 @@ manager, or use [self-update](../../reference/cli/self-update/) for standalone i
 
 ### Permission denied during install (macOS / Linux)
 
-Use `sudo` for system-wide installation, or install to a user-writable directory:
-
-```bash
-curl -sSL https://aka.ms/apm-unix | APM_INSTALL_DIR=$HOME/.local/bin sh
-```
-
-> **Important:** The installer validates `APM_LIB_DIR` before writing any files.
-> See the `APM_LIB_DIR` row above for path rules. The installer also refuses to
-> delete an existing non-empty `APM_LIB_DIR` unless it looks like a prior APM
-> install. When you set `APM_INSTALL_DIR=$HOME/.local/bin`, the derived lib path
-> (`$HOME/.local/lib/apm`) is safe and does not require sudo.
+For existing installations, follow [ownership and migration](#unix-install-ownership-and-migration). Fresh destinations, including `--prefix`, must be writable, absolute paths without dot segments.
 
 ### Binary install fails on older Linux (devcontainers, Debian-based images)
 
-On systems with a glibc version older than the minimum required by the pre-built
-binary (currently glibc 2.35), the binary will fail to run. The installer
-automatically detects incompatible glibc versions and falls back to
-`pip install --user apm-cli`.
-
-This installs the `apm` command into your user `bin` directory (commonly `~/.local/bin`).
-If `apm` is not found after installation, ensure that this directory is on your `PATH`.
-
-**Recommended fix for devcontainers on very old base images:** switch to a base
-image with glibc 2.35 or newer (e.g., the Debian `trixie` family, or
-`mcr.microsoft.com/devcontainers/universal:24-trixie`), which runs the pre-built
-binary directly without the pip fallback.
-
-If you prefer to install via pip directly:
-
-```bash
-pip install --user apm-cli
-```
+Prebuilt Linux binaries require glibc 2.35+. Use a compatible base image (for example, `mcr.microsoft.com/devcontainers/universal:24-trixie`) or Python 3.10+ and pip. Eligible automatic fallback runs the selected interpreter's `python3 -m pip` or `python -m pip` command and follows the [ownership rules](#unix-install-ownership-and-migration). If that interpreter's user scripts directory cannot be represented as one `PATH` entry, use the absolute launcher command printed by the installer. Update or uninstall a fallback install with the same Python interpreter's `-m pip`; uninstall it before switching to the binary installer.
 
 ### Authentication errors when installing packages
 

@@ -133,6 +133,12 @@ before the cache is touched. `0` makes every past entry eligible for
 removal.
 :::
 
+`prune` counts only successfully deleted SHA groups and continues attempting
+other stale entries after removal errors. It reports completed and failed counts
+with each failed path and cause, then exits `1` if any failed; successful
+deletions are not rolled back, so fix permissions or release locks and rerun the
+command.
+
 :::caution[Lockfile-blind]
 `prune` does not consult project lockfiles. It can evict every variant for a
 locked SHA. If the bare repository cannot rebuild the checkout, the next
