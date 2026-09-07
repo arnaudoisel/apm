@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Global installs anchor local children to established declaring sources without treating disguised remote names as local, and audit replays current target intent without modifying live configuration or native state. The corrective draft `docs/src/content/docs/specs/openapm-v0.2.md` versions these contracts separately; migration: pin assessments to exact `v0.2.0`, while the previous minor remains available indefinitely. Publication and ratification are pending. (#2820)
+### Changed
+
+- macOS onboarding now recommends Homebrew core (`brew install apm`, no tap) for existing Homebrew users, with `brew upgrade apm` for updates and visible standalone alternatives. (#2846)
+
+### Fixed
+
+- `apm uninstall` now preserves declarations and deployed ownership after package deletion failures, keeping retry and reinstall recovery available after partial removal. (#2860)
+- Successful HTTP cache hits now refresh LRU recency without extending response freshness, retaining frequently used MCP registry responses. (#2859)
 
 ## [0.29.1] - 2026-09-06
 
