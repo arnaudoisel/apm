@@ -81,7 +81,8 @@ curl -sSL https://aka.ms/apm-unix | APM_INSTALL_DIR="$HOME/tools/bin" sh
 # Opt out of automatic shell PATH setup
 curl -sSL https://aka.ms/apm-unix | APM_NO_MODIFY_PATH=1 sh
 
-# Air-gapped / GitHub Enterprise mirror
+# GHES release host (not a generic air-gap mirror). VERSION skips
+# releases/latest; private checksum retries can still query the exact tag.
 GITHUB_URL=https://github.corp.com VERSION=v1.2.3 sh install.sh
 ```
 
@@ -90,8 +91,8 @@ GITHUB_URL=https://github.corp.com VERSION=v1.2.3 sh install.sh
 Air-gapped hosts should **save `install.ps1` locally** (the `irm` one-liner needs reachability to the script URL).
 
 ```powershell
-# Pin a version (skips GitHub API - required for many air-gapped / GHES setups)
-# Pinned installs verify SHA256 from the matching .sha256 unless you set:
+# Pin a version (skips releases/latest - required for many air-gapped / GHES setups)
+# Pinned installs verify SHA-256 from the matching .sha256 unless you set:
 #   $env:APM_SKIP_CHECKSUM = "1"   # emergency only
 $env:VERSION = "v1.2.3"; irm https://aka.ms/apm-windows | iex
 
@@ -143,6 +144,18 @@ jobs:
 | `APM_PYPI_INDEX_URL` | *(unset)* | PyPI-compatible mirror used when the installer falls back to pip. |
 | `APM_NO_DIRECT_FALLBACK` | *(unset)* | Set to `1` to fail closed when a mirror is missing or unreachable instead of using public GitHub, `aka.ms`, or PyPI. |
 | `APM_SKIP_CHECKSUM` | *(unset)* | Windows only: set to `1` to skip `.sha256` verification on **pinned** installs (emergency only). |
+
+### Unix archive verification
+
+For every selected Unix binary release, `install.sh` fetches `{tag}/{archive}.sha256` through the same release-asset route and mirror as the archive. Canonical GitHub/GHES release-asset API retries are scoped to the configured host and numeric asset IDs; mirrors receive no GitHub auth.
+
+The installer parses the sidecar, checks hash-tool availability, and requires one record -- 64 hex SHA-256 characters, two spaces (or space plus `*`), then the exact archive basename -- before downloading the archive.
+
+Before extraction or execution, the installer compares the archive hash using `sha256sum` or `shasum -a 256`. Missing, malformed, unreachable, or mismatching checksums, or unavailable/failed hashing, stop installation. Integrity failures have no pip fallback or bypass flag.
+
+Historical releases and custom mirrors without sidecars are refused. Older tagged installer scripts are not retroactively patched; self-update inherits archive verification only when the selected installer includes the guard. Upgrade the mirrored installer and publish matching original publisher sidecars beside the archives, or select a release with sidecars. Do not generate replacement checksums from untrusted downloads.
+
+This checks integrity against the same publisher's checksum, not independent provenance or a signature.
 
 ### Unix install ownership and migration
 
@@ -213,7 +226,9 @@ apm-releases/
   latest.json
   v0.19.0/
     apm-linux-x86_64.tar.gz
+    apm-linux-x86_64.tar.gz.sha256
     apm-darwin-arm64.tar.gz
+    apm-darwin-arm64.tar.gz.sha256
     apm-windows-x86_64.zip
     apm-windows-x86_64.zip.sha256
 ```
@@ -232,7 +247,9 @@ Homebrew and Scoop mirror support is docs-only in this v0: mirror the tap or buc
 
 ### No-egress smoke test
 
-Run as an ordinary user on a disposable Linux or macOS runner with no existing APM installation. This starts a local mirror, denies public hosts through `curl`/`pip` wrappers, and expects failure after downloading the fake archive. The wrappers reject public fallback; pip also requires `APM_PYPI_INDEX_URL` in fail-closed mode.
+Run as an ordinary user on a disposable Linux or macOS runner with no existing APM installation. This starts a local mirror and wraps `curl` and `pip` to reject public hosts.
+
+This fixture fails at checksum fetch because it has no `.sha256`, before archive download or extraction and without pip fallback. The wrappers reject public fallback; pip also requires `APM_PYPI_INDEX_URL` in fail-closed mode.
 
 ```bash
 set -eu
@@ -411,13 +428,96 @@ Copy-Item -Path .\apm-windows-x86_64\* -Destination $installDir -Recurse -Force
 
 #### macOS / Linux
 
-Save and review the installer, then run it to retain [ownership checks](#unix-install-ownership-and-migration):
+The automated path is `install.sh`; it selects the platform archive and checks the publisher `.sha256` before extracting:
+
+```bash
+curl -sSL https://aka.ms/apm-unix | sh
+```
+
+To avoid pipe-to-shell while retaining ownership checks and native shell setup, save and review the installer first:
 
 ```bash
 curl -fsSL https://aka.ms/apm-unix -o install.sh
 # Review ./install.sh before running it.
 sh ./install.sh
 ```
+
+For a manual archive install into an empty caller-owned prefix, choose an exact release tag that publishes both the archive and its `.sha256` sidecar. Set `ARCHIVE` to one value from the table, then run:
+
+```bash
+(
+set -eu
+TAG=v0.29.1          # replace with a release that publishes ARCHIVE and ARCHIVE.sha256
+ARCHIVE=apm-linux-x86_64.tar.gz
+BASE_URL=https://github.com/microsoft/apm/releases/download
+INSTALL_ROOT="$HOME/.local"
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/apm-manual.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+cd "$tmp"
+
+curl -fL --proto '=https' --tlsv1.2 -o "$ARCHIVE.sha256" "$BASE_URL/$TAG/$ARCHIVE.sha256"
+if ! expected=$(LC_ALL=C awk -v asset="$ARCHIVE" '
+  {
+    sub(/\r$/, "")
+    digest = substr($0, 1, 64)
+    separator = substr($0, 65, 2)
+    name = substr($0, 67)
+    if (length(digest) == 64 && digest !~ /[^0-9a-fA-F]/ &&
+        (separator == "  " || separator == " *") && name == asset) {
+      matches++
+      found = tolower(digest)
+    } else {
+      bad = 1
+    }
+  }
+  END {
+    if (bad || matches != 1 || NR != 1) exit 1
+    print found
+  }
+' "$ARCHIVE.sha256"); then
+  echo "Malformed checksum sidecar: choose a release with a valid $ARCHIVE.sha256." >&2
+  exit 1
+fi
+
+curl -fL --proto '=https' --tlsv1.2 -o "$ARCHIVE" "$BASE_URL/$TAG/$ARCHIVE"
+if command -v sha256sum >/dev/null 2>&1; then
+  hash_line=$(sha256sum "$ARCHIVE")
+elif command -v shasum >/dev/null 2>&1; then
+  hash_line=$(shasum -a 256 "$ARCHIVE")
+else
+  echo "Install sha256sum or shasum before extracting." >&2
+  exit 1
+fi
+actual=$(printf '%s\n' "$hash_line" | awk '{print tolower($1)}')
+if [ "$actual" != "$expected" ]; then
+  echo "Archive checksum verification failed." >&2
+  exit 1
+fi
+
+tar -xzf "$ARCHIVE"
+bundle=${ARCHIVE%.tar.gz}
+"./$bundle/apm" --version
+
+mkdir -p "$INSTALL_ROOT/lib/apm" "$INSTALL_ROOT/bin"
+cp -R "$bundle"/. "$INSTALL_ROOT/lib/apm/"
+ln -sf "$INSTALL_ROOT/lib/apm/apm" "$INSTALL_ROOT/bin/apm"
+"$INSTALL_ROOT/bin/apm" --version
+)
+```
+
+`tar` and the install steps run only after the SHA-256 comparison succeeds. This walkthrough checks same-publisher integrity, not signatures or independent provenance, and bypasses `install.sh` ownership, migration, and shell setup policy. Prefer the saved-installer path above unless you need to inspect every archive step manually.
+
+If `$HOME/.local/bin` is not on `PATH`, add it using the activation syntax for your shell.
+
+Use one of these archive names:
+
+| Platform            | `ARCHIVE` value             |
+|---------------------|-----------------------------|
+| macOS Apple Silicon | `apm-darwin-arm64.tar.gz`   |
+| macOS Intel         | `apm-darwin-x86_64.tar.gz`  |
+| Linux x86_64        | `apm-linux-x86_64.tar.gz`   |
+| Linux ARM64         | `apm-linux-arm64.tar.gz`    |
 
 ## From source (contributors)
 

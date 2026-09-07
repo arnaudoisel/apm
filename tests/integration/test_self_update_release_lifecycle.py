@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -146,6 +147,10 @@ def _native_archive_bytes(tmp_path: Path, *, version: str) -> bytes:
     with tarfile.open(archive, "w:gz") as handle:
         handle.add(extracted, arcname=platform_dir)
     return archive.read_bytes()
+
+
+def _native_archive_checksum(archive: bytes) -> str:
+    return f"{hashlib.sha256(archive).hexdigest()}  {_native_platform_dir()}.tar.gz\n"
 
 
 def _scenario(
@@ -407,6 +412,7 @@ def test_self_update_with_real_installer_preserves_shell_setup_state(
     metadata_path = "/mirror/latest.json"
     installer_path = "/mirror/installers/install.sh"
     asset_path = f"/assets/v{version}/{_native_platform_dir()}.tar.gz"
+    archive = _native_archive_bytes(tmp_path, version=version)
     routes = {
         metadata_path: (200, "application/json", json.dumps({"tag_name": f"v{version}"})),
         installer_path: (
@@ -417,10 +423,15 @@ def test_self_update_with_real_installer_preserves_shell_setup_state(
                 'apm_resolve_install_paths "$APM_FIXTURE_HISTORICAL_APM"',
             ),
         ),
+        f"{asset_path}.sha256": (
+            200,
+            "text/plain",
+            _native_archive_checksum(archive),
+        ),
         asset_path: (
             200,
             "application/gzip",
-            _native_archive_bytes(tmp_path, version=version),
+            archive,
         ),
     }
     with _serve(routes) as server:
@@ -502,4 +513,9 @@ def test_self_update_with_real_installer_preserves_shell_setup_state(
     assert not (home / ".config/fish/conf.d/apm.fish").exists()
     assert (lib_dir / ".apm-shell-setup").read_bytes() == before_receipt
     assert (lib_dir / "apm").read_text(encoding="ascii").startswith("#!/bin/sh")
-    assert server.requested_paths == [metadata_path, installer_path, asset_path]
+    assert server.requested_paths == [
+        metadata_path,
+        installer_path,
+        f"{asset_path}.sha256",
+        asset_path,
+    ]

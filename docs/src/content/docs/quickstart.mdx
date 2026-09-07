@@ -32,13 +32,9 @@ No custom tap needed. Update with `brew upgrade apm`.
 curl -sSL https://aka.ms/apm-unix | sh
 ```
 
-If the installer reports that `apm` is not on `PATH`, follow its printed
-export command for the current shell. For a fresh ordinary-user install
-with default destinations, that command is:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
+Open a new shell after a native desktop install. If the current terminal cannot
+find `apm`, run the exact shell-specific `PATH` command printed by the installer
+for that shell.
 
 **Windows (PowerShell):**
 
@@ -52,7 +48,7 @@ Verify:
 apm --version
 ```
 
-For Scoop, pip, manual installs, or air-gapped mirrors,
+For Scoop, pip, manual checksum-verified archive installs, or air-gapped mirrors,
 see [Installation](../getting-started/installation/).
 
 ## 2. Initialize a project

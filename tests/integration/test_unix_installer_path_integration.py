@@ -77,6 +77,11 @@ def _stage_release(tmp_path: Path) -> tuple[Path, Path]:
         capture_output=True,
         text=True,
     )
+    checksum = tmp_path / "apm-fixture.tar.gz.sha256"
+    checksum.write_text(
+        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {platform_dir}.tar.gz\n",
+        encoding="ascii",
+    )
     tools = tmp_path / "tools"
     tools.mkdir()
     curl = tools / "curl"
@@ -88,7 +93,10 @@ def _stage_release(tmp_path: Path) -> tuple[Path, Path]:
         "  shift || true\n"
         "done\n"
         '[ -n "$out" ] || exit 2\n'
-        'cp "$APM_FIXTURE_ARCHIVE" "$out"\n',
+        'case "$out" in\n'
+        '  *.sha256) cp "$APM_FIXTURE_ARCHIVE_SHA256" "$out" ;;\n'
+        '  *) cp "$APM_FIXTURE_ARCHIVE" "$out" ;;\n'
+        "esac\n",
         encoding="ascii",
     )
     curl.chmod(0o755)
@@ -234,6 +242,7 @@ def _base_install_env(
     env = {
         **os.environ,
         "APM_FIXTURE_ARCHIVE": str(archive),
+        "APM_FIXTURE_ARCHIVE_SHA256": str(archive.with_name(f"{archive.name}.sha256")),
         "APM_RELEASE_BASE_URL": "https://example.invalid/apm",
         "CI": "",
         "GITHUB_ACTIONS": "",
@@ -252,6 +261,7 @@ def _installer_env_prefix(env: dict[str, str]) -> str:
     """Return explicit env assignments for the piped installer process."""
     keys = [
         "APM_FIXTURE_ARCHIVE",
+        "APM_FIXTURE_ARCHIVE_SHA256",
         "APM_RELEASE_BASE_URL",
         "CI",
         "GITHUB_ACTIONS",

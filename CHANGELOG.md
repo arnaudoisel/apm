@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Unix binary installs now verify original publisher SHA-256 sidecars before
+  extraction or execution, refuse historical or mirrored archives without
+  sidecars, and never fall back to pip after integrity failures. (#2842)
 ### Fixed
 
 - Global installs anchor local children to established declaring sources without treating disguised remote names as local, and audit replays current target intent without modifying live configuration or native state; `apm uninstall -g` removes departed generated Copilot sections and rebuilds eligible contributions. The corrective draft `docs/src/content/docs/specs/openapm-v0.2.md` versions these contracts separately; migration: pin assessments to exact `v0.2.0`, while the previous minor remains available indefinitely. Publication and ratification are pending. (#2820)
