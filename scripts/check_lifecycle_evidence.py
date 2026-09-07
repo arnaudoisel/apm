@@ -53,7 +53,15 @@ def source_profile(root: Path) -> tuple[Path | None, dict[str, Any]]:
     executable = launcher if os.name != "nt" and launcher.is_file() else None
     if executable:
         script = executable.read_text(encoding="utf-8")
-        if "apm_cli.cli" not in script or not script.startswith(f"#!{sys.executable}\n"):
+        interpreter = Path(script.splitlines()[0][2:]) if script.startswith("#!") else None
+        if (
+            "apm_cli.cli" not in script
+            or interpreter is None
+            or not interpreter.is_absolute()
+            or not interpreter.is_file()
+            or not interpreter.samefile(sys.executable)
+            or interpreter.parent.resolve() != Path(sys.executable).parent.resolve()
+        ):
             raise EvidenceError("Installed apm entrypoint is not this Python environment")
     return executable, {
         "kind": "source-python",

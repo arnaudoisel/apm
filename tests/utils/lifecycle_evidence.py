@@ -29,7 +29,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--lifecycle-defer-head")
 
 
-@pytest.hookimpl(trylast=True)
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Defer exact deterministic nodes to the mandatory subsequent native gate."""
     base = config.getoption("lifecycle_defer_base")
@@ -77,6 +77,53 @@ def snapshot(domain: dict[str, str]) -> str:
         for name, value in captured.snapshots
     ]
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _physical_roots(cwd: Path, env: dict[str, str]) -> dict[str, str]:
+    """Resolve overrides like the child, without mutating the observer's environment."""
+    expanded_keys = {"CLAUDE_CONFIG_DIR", "HERMES_HOME", "APM_CACHE_DIR", "XDG_CACHE_HOME"}
+    values = {
+        key: env[key].strip() if key in expanded_keys else env[key]
+        for key in DURABLE_ENVIRONMENT_ROOTS
+        if env.get(key)
+    }
+    tilde = {
+        key: value
+        for key, value in values.items()
+        if key in expanded_keys and value.startswith("~")
+    }
+    if tilde:
+        # Only tilde roots need child HOME/USERPROFILE and platform account lookup.
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import json, sys; from pathlib import Path; "
+                "print(json.dumps({k: str(Path(v).expanduser()) "
+                "for k, v in json.load(sys.stdin).items()}))",
+            ],
+            input=json.dumps(tilde),
+            cwd=cwd,
+            env=dict(env),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if probe.returncode != 0:
+            raise EvidenceError("Child durable root expansion failed")
+        try:
+            expanded = json.loads(probe.stdout)
+        except json.JSONDecodeError as exc:
+            raise EvidenceError("Child durable root expansion produced invalid output") from exc
+        if (
+            not isinstance(expanded, dict)
+            or expanded.keys() != tilde.keys()
+            or any(not isinstance(value, str) or not value for value in expanded.values())
+        ):
+            raise EvidenceError("Child durable root expansion produced invalid paths")
+        values.update(expanded)
+    return {key: str((cwd / value).resolve()) for key, value in values.items()}
 
 
 class LifecycleEvidencePlugin:
@@ -160,16 +207,16 @@ class LifecycleEvidencePlugin:
         """Pin an isolated domain while allowing only reviewed command contexts."""
         if self.active is None:
             raise EvidenceError("Lifecycle context requires an active test node")
-        environment = {
-            key: str(Path(env[key]).absolute()) for key in DURABLE_ENVIRONMENT_ROOTS if env.get(key)
-        }
-        physical = {key: str(Path(value).resolve()) for key, value in environment.items()}
+        environment = {key: env[key] for key in DURABLE_ENVIRONMENT_ROOTS if env.get(key)}
+        physical = _physical_roots(cwd, env)
         identity = json.dumps([environment, physical], sort_keys=True)
         key = (self.active, self.model_run, identity)
         location = str(cwd.resolve())
         if key not in self.domains:
             if any(
-                node == self.active and model == self.model_run and roots["workspace"] == location
+                node == self.active
+                and model == self.model_run
+                and location in {roots["workspace"], roots.get("APM_HOME")}
                 for (node, model, _identity), roots in self.domains.items()
             ):
                 raise EvidenceError("Lifecycle durable roots changed for the same caller workspace")
@@ -209,7 +256,7 @@ class LifecycleEvidencePlugin:
             source = self._source_identity(cwd, env, kwargs["timeout_seconds"], command)
             before = snapshot(roots)
             result = original(runner, args, **kwargs)
-            if any(str(Path(value).resolve()) != roots[key] for key, value in environment.items()):
+            if _physical_roots(cwd, env) != {key: roots[key] for key in environment}:
                 raise EvidenceError("Lifecycle durable root identity changed during command")
             after = snapshot(roots)
             self.records[self.active]["events"].append(

@@ -116,6 +116,8 @@ def test_lifecycle_evidence_is_executed_in_required_candidate_lanes() -> None:
     integration = workflow_job(
         load_workflow(MERGE_GROUP_INTEGRATION_WORKFLOW), MERGE_GROUP_INTEGRATION_JOB
     )
+    checkout = next(s for s in integration["steps"] if "actions/checkout@" in s.get("uses", ""))
+    assert checkout["with"]["fetch-depth"] == 0
     full = workflow_step(integration, "Execute full lifecycle contracts")
     assert full["if"] == "github.event_name == 'merge_group' && matrix.shard == 1"
     assert full["timeout-minutes"] == 20

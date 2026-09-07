@@ -331,6 +331,87 @@ def test_domain_does_not_splice_distinct_hypothesis_instances(tmp_path: Path) ->
         validate_execution(witness, evidence)
 
 
+@pytest.mark.parametrize("override", ["../outside-hermes", " ~/external-hermes "])
+@pytest.mark.parametrize(
+    ("key", "resolver"),
+    [
+        ("HERMES_HOME", "resolve_hermes_root()"),
+        ("CLAUDE_CONFIG_DIR", "Path.home() / KNOWN_TARGETS['claude'].for_scope(True).root_dir"),
+        ("APM_CACHE_DIR", "get_cache_root()"),
+        ("XDG_CACHE_HOME", "get_cache_root().parent"),
+    ],
+)
+def test_domain_observes_actual_child_resolved_root(
+    tmp_path: Path, override: str, key: str, resolver: str
+) -> None:
+    from tests.utils.isolated_apm_environment import DURABLE_ENVIRONMENT_ROOTS
+
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    env = {
+        **{
+            name: value
+            for name, value in os.environ.items()
+            if name not in DURABLE_ENVIRONMENT_ROOTS
+        },
+        "HOME": str(tmp_path / "home"),
+        "USERPROFILE": str(tmp_path / "home"),
+        key: override,
+    }
+    plugin = LifecycleEvidencePlugin(["test"], None)
+    plugin.active = "test"
+    roots, environment, _ = plugin._domain(caller, env)
+    before = snapshot(roots)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; "
+            "from apm_cli.integration.targets import KNOWN_TARGETS, resolve_hermes_root; "
+            "from apm_cli.cache.paths import get_cache_root; "
+            f"root = ({resolver}).resolve(); root.mkdir(parents=True, exist_ok=True); "
+            "(root / 'sentinel').write_text('child wrote here'); print(root)",
+        ],
+        cwd=caller,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert environment[key] == override
+    assert roots[key] == result.stdout.strip()
+    assert snapshot(roots) != before
+    assert plugin._domain(caller, env)[0] == roots
+
+
+def test_relative_roots_cannot_move_with_reviewed_cwd(tmp_path: Path) -> None:
+    caller = tmp_path / "caller"
+    apm_home = tmp_path / "home/apm"
+    caller.mkdir()
+    apm_home.mkdir(parents=True)
+    env = {"APM_HOME": str(apm_home), "HERMES_HOME": "../hermes"}
+    plugin = LifecycleEvidencePlugin(["test"], None, {"test": {"APM_HOME"}})
+    plugin.active = "test"
+    plugin._domain(caller, env)
+    with pytest.raises(EvidenceError, match="durable roots changed"):
+        plugin._domain(apm_home, env)
+
+
+@pytest.mark.parametrize("output", ["not json", "[]", "{}", '{"HERMES_HOME": null}'])
+def test_root_expansion_rejects_malformed_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: str
+) -> None:
+    from tests.utils import lifecycle_evidence as observer
+
+    monkeypatch.setattr(
+        observer.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=output),
+    )
+    with pytest.raises(EvidenceError, match="Child durable root expansion"):
+        observer._physical_roots(tmp_path, {"HERMES_HOME": "~/hermes"})
+
+
 def test_child_source_probe_rejects_old_checkout_even_when_cli_would_pass(
     tmp_path: Path,
 ) -> None:
@@ -436,6 +517,52 @@ def test_smoke_plugin_loads_before_collection_from_repository() -> None:
     assert "--lifecycle-defer-head" in result.stdout
 
 
+def test_smoke_defers_exact_node_before_real_loadgroup_decoration(
+    pytester: pytest.Pytester,
+) -> None:
+    from scripts.check_lifecycle_evidence import ROOT
+
+    pytester.makeconftest(f"""
+        import sys
+        sys.path.insert(0, {str(ROOT)!r})
+        pytest_plugins = ["tests.utils.lifecycle_evidence"]
+        def pytest_configure(config):
+            from scripts import check_lifecycle_evidence as gate
+            from tests.utils import lifecycle_evidence as observer
+            gate.candidate = lambda *args: {{"base": "base", "head": "head"}}
+            observer.candidate_contracts = lambda *args: (set(), [{{
+                "witnesses": [{{
+                    "nodeid": "test_grouped.py::test_deferred[global]",
+                    "kind": "deterministic",
+                }}],
+            }}])
+    """)
+    pytester.makepyfile(
+        test_grouped="""
+        import pytest
+        pytestmark = pytest.mark.xdist_group("home_env")
+        @pytest.mark.parametrize("variant", ["global"])
+        def test_deferred(variant):
+            pytest.fail("must execute only in the subsequent native gate")
+        def test_retained(request):
+            assert request.node.nodeid.endswith("@home_env")
+    """
+    )
+    result = pytester.runpytest_subprocess(
+        "-q",
+        "-n",
+        "2",
+        "--dist",
+        "loadgroup",
+        "--lifecycle-defer-base",
+        "base",
+        "--lifecycle-defer-head",
+        "head",
+    )
+    result.assert_outcomes(passed=1)
+    assert result.ret == 0
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Installed Unix launcher import-path control")
 def test_source_probe_distinguishes_launcher_and_module_search_paths(tmp_path: Path) -> None:
     package = tmp_path / "apm_cli"
@@ -501,6 +628,28 @@ def test_candidate_rejects_stale_head_and_dirty_tree(tmp_path: Path) -> None:
         candidate(tmp_path, base, head)
 
 
+def test_candidate_requires_history_beyond_fetched_shallow_endpoints(tmp_path: Path) -> None:
+    origin, checkout = tmp_path / "origin", tmp_path / "checkout"
+    origin.mkdir()
+
+    def run(root: Path, *args: str) -> str:
+        return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+    run(origin, "init", "-q")
+    run(origin, "config", "user.email", "fixture@example.invalid")
+    run(origin, "config", "user.name", "Fixture")
+    run(origin, "commit", "--allow-empty", "-qm", "base")
+    base = run(origin, "rev-parse", "HEAD")
+    run(origin, "commit", "--allow-empty", "-qm", "head")
+    head = run(origin, "rev-parse", "HEAD")
+    run(tmp_path, "clone", "-q", "--depth=1", origin.as_uri(), str(checkout))
+    run(checkout, "fetch", "-q", "origin", base, head)
+    with pytest.raises(subprocess.CalledProcessError):
+        candidate(checkout, base, head)
+    run(checkout, "fetch", "-q", "--unshallow", "origin")
+    assert candidate(checkout, base, head)["head"] == head
+
+
 def test_plugin_observes_actual_execution_and_rejects_deselection(
     pytester: pytest.Pytester,
 ) -> None:
@@ -513,7 +662,10 @@ def test_plugin_observes_actual_execution_and_rejects_deselection(
         from hypothesis.stateful import RuleBasedStateMachine, rule, run_state_machine_as_test
         @pytest.mark.parametrize("variant", ["global"])
         def test_real(tmp_path, variant):
-            env = {**os.environ, "HOME": str(tmp_path / "home")}
+            env = {
+                **os.environ, "HOME": str(tmp_path / "home"),
+                "HERMES_HOME": "../external-hermes",
+            }
             runner = ApmLifecycleRunner((sys.executable, "-m", "apm_cli.cli"))
             for _ in range(2):
                 result = runner.run(["--version"], cwd=tmp_path, env=env)
@@ -549,6 +701,11 @@ def test_plugin_observes_actual_execution_and_rejects_deselection(
     record = plugin.records[real]
     assert record["dimensions"] == {"variant": "global"}
     assert len(record["events"]) == 2
+    for event in record["events"]:
+        assert event["environment"]["HERMES_HOME"] == "../external-hermes"
+        assert event["roots"]["HERMES_HOME"] == str(
+            (Path(event["cwd"]).parent / "external-hermes").resolve()
+        )
     assert record["phases"] == {"setup": "passed", "call": "passed", "teardown": "passed"}
     assert plugin.records[skipped]["phases"]["call"] == "skipped"
     assert plugin.records[xfailed]["phases"]["call"] == "xfail"
@@ -618,6 +775,28 @@ def test_source_profile_rejects_foreign_source_and_stale_launcher(
     assert source_profile(tmp_path)[1] != initial
     with pytest.raises(EvidenceError, match="candidate checkout"):
         source_profile(tmp_path / "different")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix launcher interpreter aliases")
+def test_source_profile_accepts_only_same_environment_interpreter_aliases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import venv
+
+    from scripts.check_lifecycle_evidence import ROOT
+
+    for name in ("current", "foreign"):
+        venv.EnvBuilder(with_pip=False, symlinks=True).create(tmp_path / name)
+    current = tmp_path / "current/bin"
+    foreign = tmp_path / "foreign/bin"
+    monkeypatch.setattr(sys, "executable", str(current / "python3"))
+    launcher = current / "apm"
+    launcher.write_text(f"#!{current / 'python'}\nfrom apm_cli.cli import cli\n", encoding="ascii")
+    assert source_profile(ROOT)[0] == launcher
+    assert (current / "python").samefile(foreign / "python")
+    launcher.write_text(f"#!{foreign / 'python'}\nfrom apm_cli.cli import cli\n", encoding="ascii")
+    with pytest.raises(EvidenceError, match="this Python environment"):
+        source_profile(ROOT)
 
 
 def test_cli_rejects_in_tree_receipts(monkeypatch: pytest.MonkeyPatch) -> None:
