@@ -192,10 +192,18 @@ MUTATIONS: tuple[MutationCase, ...] = (
     MutationCase(
         guard_id="contracts-tooling-policy-identity",
         rule_id="contracts-tooling-policy-identity",
-        path="src/apm_cli/models/dependency/identity.py",
-        old="def normalize_package_policy_identity(",
-        new="def normalize_package_policy_identity_disabled(",
-        intent="Policy identity casing loses its canonical normalizer.",
+        path="src/apm_cli/policy/matcher.py",
+        old=(
+            "                name, case_insensitive_prefix_segments=prefix\n"
+            "            )\n"
+            "            index._names"
+        ),
+        new=(
+            "                name, case_insensitive_prefix_segments=0\n"
+            "            )\n"
+            "            index._names"
+        ),
+        intent="Policy index construction ignores the source-owned casing prefix.",
     ),
     MutationCase(
         guard_id="contracts-tooling-project-yaml-write-delegation",
@@ -208,10 +216,10 @@ MUTATIONS: tuple[MutationCase, ...] = (
     MutationCase(
         guard_id="contracts-tooling-python-artifact-membership",
         rule_id="contracts-tooling-python-artifact-membership",
-        path="src/apm_cli/security/gate.py",
-        old="def is_generated_python_artifact(",
-        new="def is_generated_python_artifact_disabled(",
-        intent="Generated Python artifact membership loses its canonical predicate.",
+        path="src/apm_cli/install/deployed_paths.py",
+        old="is_generated_python_artifact(relative)",
+        new="False",
+        intent="Skill lockfile inventory stops excluding generated Python artifacts.",
     ),
     MutationCase(
         guard_id="contracts-tooling-root-context-write-eligibility",
