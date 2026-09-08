@@ -185,10 +185,17 @@ MUTATIONS: tuple[MutationCase, ...] = (
         guard_id="contracts-tooling-policy-identity",
         rule_id="contracts-tooling-policy-identity",
         path="src/apm_cli/policy/matcher.py",
-        old="            normalized = normalize_package_policy_identity(\n",
-        new="            normalized = normalize_package_repo_url(\n",
-        intent="Dependency policy matching skips the source-owned identity normalizer.",
-        replace_all=True,
+        old=(
+            "                name, case_insensitive_prefix_segments=prefix\n"
+            "            )\n"
+            "            index._names"
+        ),
+        new=(
+            "                name, case_insensitive_prefix_segments=0\n"
+            "            )\n"
+            "            index._names"
+        ),
+        intent="Policy index construction ignores the source-owned casing prefix.",
     ),
     MutationCase(
         guard_id="contracts-tooling-project-yaml-write-delegation",
@@ -1167,6 +1174,24 @@ def test_git_semver_guard_rejects_bypassing_selected_attempt_requested_url() -> 
         violation.rule_id == "transport-platform-git-semver-preflight"
         for violation in report.violations
     )
+
+
+def test_policy_identity_guard_rejects_bypassing_the_canonical_normalizer() -> None:
+    """Retain the call-delegation regression alongside the casing-prefix mutation."""
+    case = MutationCase(
+        guard_id="contracts-tooling-policy-identity",
+        rule_id="contracts-tooling-policy-identity",
+        path="src/apm_cli/policy/matcher.py",
+        old="            normalized = normalize_package_policy_identity(\n",
+        new="            normalized = normalize_package_repo_url(\n",
+        intent="Dependency policy matching skips the source-owned identity normalizer.",
+        replace_all=True,
+    )
+    mutated = _mutate(case)
+    ast.parse(mutated, filename=case.path)
+    report = run_selected_rules(ROOT, (case.rule_id,), source_overrides={case.path: mutated})
+    assert report.failures == ()
+    assert any(violation.rule_id == case.rule_id for violation in report.violations)
 
 
 @pytest.mark.parametrize("case", MUTATIONS, ids=CASE_IDS)
