@@ -56,6 +56,41 @@ jobs:
         shell: bash
         run: test "$(git rev-parse HEAD)" = "${BASELINE_FROZEN_MAIN_SHA}"
 
+      - name: Guard baseline tooling SHA
+        shell: bash
+        run: |
+          if [ "${BASELINE_TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${BASELINE_TOOLING_SHA}" ]; then
+            echo "::error::BASELINE_TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
+            exit 1
+          fi
+
+      - name: Checkout wall-clock tooling
+        shell: bash
+        run: |
+          git init "${RUNNER_TEMP}/wallclock-tooling"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" fetch --depth=1 origin "${BASELINE_TOOLING_SHA}"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" checkout --detach FETCH_HEAD
+
+      - name: Install baseline pytest evidence plugin
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/wallclock-pytest-plugins"
+          cp \
+            "${RUNNER_TEMP}/wallclock-tooling/scripts/pytest_performance_evidence.py" \
+            "${RUNNER_TEMP}/wallclock-pytest-plugins/baseline_pytest_performance_evidence.py"
+
+      - name: Record baseline job observer
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/wallclock-job"
+          cd "${RUNNER_TEMP}/wallclock-tooling"
+          python -m scripts.release_wallclock record-job \
+            --side baseline \
+            --source-root "${GITHUB_WORKSPACE}" \
+            --source-sha "${BASELINE_FROZEN_MAIN_SHA}" \
+            --output "${RUNNER_TEMP}/wallclock-job/${{ matrix.binary_name }}-build-and-test-job.json"
+
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -80,17 +115,22 @@ jobs:
         shell: pwsh
         env:
           APM_E2E_TESTS: "1"
+          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: >-
           uv run --frozen pytest
           tests/integration/test_windows_installer_launchers.py
+          -p baseline_pytest_performance_evidence
+          --junitxml "${env:RUNNER_TEMP}\wallclock-junit\${{ matrix.binary_name }}-installer.xml"
           -vv -ra --tb=short
 
       - name: Run unit tests
         if: matrix.platform != 'windows'
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: >-
           uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
+          -p baseline_pytest_performance_evidence
           --junitxml "${RUNNER_TEMP}/wallclock-junit/${{ matrix.binary_name }}-unit.xml"
 
       # Named starts/outcomes identify unfinished tests without dumping captures.
@@ -101,8 +141,10 @@ jobs:
         env:
           PYTHONUNBUFFERED: "1"
           GITHUB_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: >-
           uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
+          -p baseline_pytest_performance_evidence
           -vv --tb=short --show-capture=no --no-showlocals
           --junitxml "${env:RUNNER_TEMP}\wallclock-junit\${{ matrix.binary_name }}-unit.xml"
 
@@ -111,8 +153,10 @@ jobs:
         env:
           GITHUB_API_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: >-
           uv run pytest tests/integration/test_runtime_smoke.py -v
+          -p baseline_pytest_performance_evidence
           --junitxml "${RUNNER_TEMP}/wallclock-junit/${{ matrix.binary_name }}-smoke.xml"
 
       - name: Run smoke tests (Windows)
@@ -121,8 +165,10 @@ jobs:
         env:
           GITHUB_API_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: >-
           uv run pytest tests/integration/test_runtime_smoke.py -v
+          -p baseline_pytest_performance_evidence
           --junitxml "${env:RUNNER_TEMP}\wallclock-junit\${{ matrix.binary_name }}-smoke.xml"
 
       - name: Install UPX (Linux)
@@ -165,7 +211,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: baseline-test-output-${{ matrix.binary_name }}
-          path: ${{ runner.temp }}/wallclock-junit
+          path: |
+            ${{ runner.temp }}/wallclock-junit
+            ${{ runner.temp }}/wallclock-job
           if-no-files-found: ignore
 
   # Consolidated macOS Intel build + validation.
@@ -189,6 +237,37 @@ jobs:
       - name: Verify frozen source checkout
         shell: bash
         run: test "$(git rev-parse HEAD)" = "${BASELINE_FROZEN_MAIN_SHA}"
+
+      - name: Guard baseline tooling SHA
+        run: |
+          if [ "${BASELINE_TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${BASELINE_TOOLING_SHA}" ]; then
+            echo "::error::BASELINE_TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
+            exit 1
+          fi
+
+      - name: Checkout wall-clock tooling
+        run: |
+          git init "${RUNNER_TEMP}/wallclock-tooling"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" fetch --depth=1 origin "${BASELINE_TOOLING_SHA}"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" checkout --detach FETCH_HEAD
+
+      - name: Install baseline pytest evidence plugin
+        run: |
+          mkdir -p "${RUNNER_TEMP}/wallclock-pytest-plugins"
+          cp \
+            "${RUNNER_TEMP}/wallclock-tooling/scripts/pytest_performance_evidence.py" \
+            "${RUNNER_TEMP}/wallclock-pytest-plugins/baseline_pytest_performance_evidence.py"
+
+      - name: Record baseline job observer
+        run: |
+          mkdir -p "${RUNNER_TEMP}/wallclock-job"
+          cd "${RUNNER_TEMP}/wallclock-tooling"
+          python -m scripts.release_wallclock record-job \
+            --side baseline \
+            --source-root "${GITHUB_WORKSPACE}" \
+            --source-sha "${BASELINE_FROZEN_MAIN_SHA}" \
+            --output "${RUNNER_TEMP}/wallclock-job/apm-darwin-x86_64-build-validate-job.json"
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -225,8 +304,11 @@ jobs:
         run: mkdir -p "${RUNNER_TEMP}/wallclock-junit"
 
       - name: Run unit tests
+        env:
+          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: >-
           uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
+          -p baseline_pytest_performance_evidence
           --junitxml "${RUNNER_TEMP}/wallclock-junit/apm-darwin-x86_64-unit.xml"
 
       # PHASE 1: BUILD BINARY
@@ -239,11 +321,13 @@ jobs:
         env:
           APM_E2E_TESTS: "1"
           APM_BINARY_PATH: ${{ github.workspace }}/dist/apm-darwin-x86_64/apm
+          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: |
           test -x "$APM_BINARY_PATH"
           uv run --frozen pytest \
             tests/integration/test_core_smoke.py::TestBinaryStartup::test_apm_version_runs \
             tests/integration/test_core_smoke.py::TestBinaryStartup::test_apm_rich_table_runs \
+            -p baseline_pytest_performance_evidence \
             -vv -ra --tb=short \
             --junitxml "${RUNNER_TEMP}/wallclock-junit/apm-darwin-x86_64-startup.xml"
 
@@ -266,11 +350,12 @@ jobs:
         env:
           APM_E2E_TESTS: "1"
           GITHUB_API_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
           # Intel validates the promoted lifecycle subset against its native
           # binary. Live credential acceptance belongs to auth-acceptance.yml.
           # loadgroup preserves HOME-mutating test serialization.
           PYTEST_MARK_EXPR: "lifecycle_smoke and not live"
-          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup --junitxml ${{ runner.temp }}/wallclock-junit/apm-darwin-x86_64-integration.xml"
+          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup -p baseline_pytest_performance_evidence --junitxml ${{ runner.temp }}/wallclock-junit/apm-darwin-x86_64-integration.xml"
         run: |
           chmod +x scripts/test-integration.sh
           uv run ./scripts/test-integration.sh
@@ -306,7 +391,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: baseline-test-output-apm-darwin-x86_64
-          path: ${{ runner.temp }}/wallclock-junit
+          path: |
+            ${{ runner.temp }}/wallclock-junit
+            ${{ runner.temp }}/wallclock-job
           if-no-files-found: ignore
 
   # Consolidated macOS ARM build + validation.
@@ -330,6 +417,37 @@ jobs:
       - name: Verify frozen source checkout
         shell: bash
         run: test "$(git rev-parse HEAD)" = "${BASELINE_FROZEN_MAIN_SHA}"
+
+      - name: Guard baseline tooling SHA
+        run: |
+          if [ "${BASELINE_TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${BASELINE_TOOLING_SHA}" ]; then
+            echo "::error::BASELINE_TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
+            exit 1
+          fi
+
+      - name: Checkout wall-clock tooling
+        run: |
+          git init "${RUNNER_TEMP}/wallclock-tooling"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" fetch --depth=1 origin "${BASELINE_TOOLING_SHA}"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" checkout --detach FETCH_HEAD
+
+      - name: Install baseline pytest evidence plugin
+        run: |
+          mkdir -p "${RUNNER_TEMP}/wallclock-pytest-plugins"
+          cp \
+            "${RUNNER_TEMP}/wallclock-tooling/scripts/pytest_performance_evidence.py" \
+            "${RUNNER_TEMP}/wallclock-pytest-plugins/baseline_pytest_performance_evidence.py"
+
+      - name: Record baseline job observer
+        run: |
+          mkdir -p "${RUNNER_TEMP}/wallclock-job"
+          cd "${RUNNER_TEMP}/wallclock-tooling"
+          python -m scripts.release_wallclock record-job \
+            --side baseline \
+            --source-root "${GITHUB_WORKSPACE}" \
+            --source-sha "${BASELINE_FROZEN_MAIN_SHA}" \
+            --output "${RUNNER_TEMP}/wallclock-job/apm-darwin-arm64-build-validate-job.json"
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -361,8 +479,11 @@ jobs:
         run: mkdir -p "${RUNNER_TEMP}/wallclock-junit"
 
       - name: Run unit tests
+        env:
+          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: >-
           uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
+          -p baseline_pytest_performance_evidence
           --junitxml "${RUNNER_TEMP}/wallclock-junit/apm-darwin-arm64-unit.xml"
 
       # PHASE 1: BUILD BINARY
@@ -375,11 +496,13 @@ jobs:
         env:
           APM_E2E_TESTS: "1"
           APM_BINARY_PATH: ${{ github.workspace }}/dist/apm-darwin-arm64/apm
+          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: |
           test -x "$APM_BINARY_PATH"
           uv run --frozen pytest \
             tests/integration/test_core_smoke.py::TestBinaryStartup::test_apm_version_runs \
             tests/integration/test_core_smoke.py::TestBinaryStartup::test_apm_rich_table_runs \
+            -p baseline_pytest_performance_evidence \
             -vv -ra --tb=short \
             --junitxml "${RUNNER_TEMP}/wallclock-junit/apm-darwin-arm64-startup.xml"
 
@@ -402,13 +525,14 @@ jobs:
         env:
           APM_E2E_TESTS: "1"
           GITHUB_API_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
           # Scarce ARM runners force the full suite onto one runner, so
           # parallelise the non-live corpus in-process with xdist.
           # --dist loadgroup honors the
           # home_env xdist_group markers that keep HOME-mutating tests
           # serialized on a single worker.
           PYTEST_MARK_EXPR: "not live"
-          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup --junitxml ${{ runner.temp }}/wallclock-junit/apm-darwin-arm64-integration.xml"
+          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup -p baseline_pytest_performance_evidence --junitxml ${{ runner.temp }}/wallclock-junit/apm-darwin-arm64-integration.xml"
         run: |
           chmod +x scripts/test-integration.sh
           uv run ./scripts/test-integration.sh
@@ -444,7 +568,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: baseline-test-output-apm-darwin-arm64
-          path: ${{ runner.temp }}/wallclock-junit
+          path: |
+            ${{ runner.temp }}/wallclock-junit
+            ${{ runner.temp }}/wallclock-job
           if-no-files-found: ignore
 
   # Integration tests with full source code access (Linux + Windows).
@@ -483,6 +609,41 @@ jobs:
       - name: Verify frozen source checkout
         shell: bash
         run: test "$(git rev-parse HEAD)" = "${BASELINE_FROZEN_MAIN_SHA}"
+
+      - name: Guard baseline tooling SHA
+        shell: bash
+        run: |
+          if [ "${BASELINE_TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${BASELINE_TOOLING_SHA}" ]; then
+            echo "::error::BASELINE_TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
+            exit 1
+          fi
+
+      - name: Checkout wall-clock tooling
+        shell: bash
+        run: |
+          git init "${RUNNER_TEMP}/wallclock-tooling"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" fetch --depth=1 origin "${BASELINE_TOOLING_SHA}"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" checkout --detach FETCH_HEAD
+
+      - name: Install baseline pytest evidence plugin
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/wallclock-pytest-plugins"
+          cp \
+            "${RUNNER_TEMP}/wallclock-tooling/scripts/pytest_performance_evidence.py" \
+            "${RUNNER_TEMP}/wallclock-pytest-plugins/baseline_pytest_performance_evidence.py"
+
+      - name: Record baseline job observer
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/wallclock-job"
+          cd "${RUNNER_TEMP}/wallclock-tooling"
+          python -m scripts.release_wallclock record-job \
+            --side baseline \
+            --source-root "${GITHUB_WORKSPACE}" \
+            --source-sha "${BASELINE_FROZEN_MAIN_SHA}" \
+            --output "${RUNNER_TEMP}/wallclock-job/${{ matrix.binary_name }}-integration-job.json"
 
       - name: Download APM binary from build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -536,11 +697,12 @@ jobs:
         env:
           APM_E2E_TESTS: "1"
           GITHUB_API_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
           # The tag gate runs the non-live corpus on one runner. Four workers stay
           # below the merge gate's aggregate width while loadgroup preserves
           # xdist_group serialization for HOME-mutating tests.
           PYTEST_MARK_EXPR: "not live"
-          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup --junitxml ${{ runner.temp }}/wallclock-junit/${{ matrix.binary_name }}-integration.xml"
+          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup -p baseline_pytest_performance_evidence --junitxml ${{ runner.temp }}/wallclock-junit/${{ matrix.binary_name }}-integration.xml"
         run: |
           chmod +x scripts/test-integration.sh
           uv run ./scripts/test-integration.sh
@@ -552,10 +714,27 @@ jobs:
         env:
           APM_E2E_TESTS: "1"
           GITHUB_API_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
           PYTEST_EXTRA_ARGS: >-
+            -p baseline_pytest_performance_evidence
             --junitxml ${{ runner.temp }}\wallclock-junit\${{ matrix.binary_name }}-integration.xml
         run: |
-          uv run pwsh scripts/windows/test-integration.ps1 -SkipBuild
+          $outputDir = Join-Path $env:RUNNER_TEMP "wallclock-output"
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+          @"
+          frozen-main script: scripts/windows/test-integration.ps1 -SkipBuild
+          pytest selections inside frozen script:
+          - tests/integration/test_auto_install_e2e.py -v -s --tb=short
+          - tests/integration/test_mcp_registry_e2e.py -v -s --tb=short
+          - tests/integration/test_apm_dependencies.py -v -s --tb=short -m integration
+          - tests/integration/test_ado_e2e.py -m "live and requires_ado_pat" -v -s --tb=short only when IncludeLiveADO and ADO_APM_PAT are present
+          controller note: PYTEST_EXTRA_ARGS is passed for compatibility with shared inventory, but frozen main's PowerShell script does not consume it.
+          "@ | Out-File -FilePath (Join-Path $outputDir "${{ matrix.binary_name }}-integration-selection.txt") -Encoding utf8
+          & uv run pwsh scripts/windows/test-integration.ps1 -SkipBuild *>&1 |
+            Tee-Object -FilePath (Join-Path $outputDir "${{ matrix.binary_name }}-integration-stdout.log")
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
         timeout-minutes: 20
 
       - name: Upload baseline test output inventory
@@ -563,7 +742,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: baseline-test-output-${{ matrix.binary_name }}-integration
-          path: ${{ runner.temp }}/wallclock-junit
+          path: |
+            ${{ runner.temp }}/wallclock-junit
+            ${{ runner.temp }}/wallclock-job
+            ${{ runner.temp }}/wallclock-output
           if-no-files-found: ignore
 
   # Release validation tests - Final baseline validation of shipped binary (Linux + Windows).
@@ -918,6 +1100,14 @@ jobs:
       - name: Verify frozen source checkout
         shell: bash
         run: test "$(git -C baseline-frozen-source rev-parse HEAD)" = "${BASELINE_FROZEN_MAIN_SHA}"
+
+      - name: Guard baseline tooling SHA
+        shell: bash
+        run: |
+          if [ "${BASELINE_TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${BASELINE_TOOLING_SHA}" ]; then
+            echo "::error::BASELINE_TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
+            exit 1
+          fi
 
       - name: Checkout wall-clock tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
