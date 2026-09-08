@@ -353,6 +353,18 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: Expose baseline pytest plugin to integration virtualenv
+        run: |
+          uv run python - <<'PY'
+          import shutil
+          import sysconfig
+          from pathlib import Path
+
+          target = Path(sysconfig.get_paths()["purelib"]) / "_apm_wallclock_evidence.py"
+          shutil.copyfile(Path("_apm_wallclock_evidence.py"), target)
+          print(f"Installed baseline pytest evidence plugin at {target}")
+          PY
+
       # PHASE 2: FOCUSED INTEGRATION TESTS
       - name: Run focused Intel integration tests
         env:
@@ -532,6 +544,18 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: Expose baseline pytest plugin to integration virtualenv
+        run: |
+          uv run python - <<'PY'
+          import shutil
+          import sysconfig
+          from pathlib import Path
+
+          target = Path(sysconfig.get_paths()["purelib"]) / "_apm_wallclock_evidence.py"
+          shutil.copyfile(Path("_apm_wallclock_evidence.py"), target)
+          print(f"Installed baseline pytest evidence plugin at {target}")
+          PY
+
       # PHASE 2: INTEGRATION TESTS
       - name: Run integration tests
         env:
@@ -710,6 +734,20 @@ jobs:
       - name: Prepare baseline test output directory
         shell: bash
         run: mkdir -p "${RUNNER_TEMP}/wallclock-junit"
+
+      - name: Expose baseline pytest plugin to integration virtualenv
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: |
+          uv run python - <<'PY'
+          import shutil
+          import sysconfig
+          from pathlib import Path
+
+          target = Path(sysconfig.get_paths()["purelib"]) / "_apm_wallclock_evidence.py"
+          shutil.copyfile(Path("_apm_wallclock_evidence.py"), target)
+          print(f"Installed baseline pytest evidence plugin at {target}")
+          PY
 
       - name: Run integration tests (Unix)
         if: matrix.platform != 'windows'
@@ -1243,7 +1281,8 @@ jobs:
               "TOOLING_SHA checkouts are sparse and blob-filtered to scripts/release_wallclock.py, scripts/package_release.py, scripts/release-platforms.json, and scripts/pytest_performance_evidence.py",
               "TOOL checkout overhead is disclosed through the Checkout sparse wall-clock tooling step duration in the Actions jobs API",
               "source_sha, controller_sha, and run_head_sha are recorded separately",
-              "JUnit and output inventory are retained as baseline-test-output-* artifacts without PYTEST_ADDOPTS"
+              "JUnit and output inventory are retained as baseline-test-output-* artifacts without PYTEST_ADDOPTS",
+              "Unix integration wrapper plugin importability is provided by copying the evidence plugin into the uv virtualenv before frozen scripts call console pytest"
             ],
             "local_integration_points": {
               "native_root": "wallclock-native-root",
