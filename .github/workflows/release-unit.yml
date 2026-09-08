@@ -18,6 +18,9 @@ on:
       proposed-workers:
         type: number
         default: 4
+      wallclock-evidence:
+        type: boolean
+        default: false
     secrets:
       GH_CLI_PAT:
         required: false
@@ -41,6 +44,13 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - name: Record actual unit runner for wall-clock proof
+        if: inputs.wallclock-evidence
+        shell: bash
+        run: >-
+          python -m scripts.release_wallclock record-job
+          --side proposed --source-root . --source-sha "$GITHUB_SHA"
+          --output test-results/unit-environment.json
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
@@ -68,7 +78,9 @@ jobs:
           GITHUB_TOKEN: ${{ inputs.platform == 'linux' && secrets.GH_MODELS_PAT || '' }}
           GITHUB_APM_PAT: ${{ inputs.platform == 'linux' && secrets.GH_CLI_PAT || '' }}
         run: >-
-          uv run --frozen pytest tests/unit tests/test_console.py
+          uv run --frozen
+          ${{ inputs.wallclock-evidence && 'python -m pytest -p scripts.pytest_performance_evidence' || 'pytest' }}
+          tests/unit tests/test_console.py
           -n auto --dist worksteal --durations=50 --store-durations
           --junitxml=test-results/unit.xml
       - name: Run unit performance baseline
@@ -89,7 +101,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_MODELS_PAT }}
           GITHUB_APM_PAT: ${{ secrets.GH_CLI_PAT }}
         run: >-
-          uv run --frozen pytest tests/unit tests/test_console.py
+          uv run --frozen
+          ${{ inputs.wallclock-evidence && 'python -m pytest -p scripts.pytest_performance_evidence' || 'pytest' }}
+          tests/unit tests/test_console.py
           -n auto --dist worksteal --durations=50 --store-durations
           --junitxml=test-results/unit.xml
           -vv --tb=short --show-capture=no --no-showlocals

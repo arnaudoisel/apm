@@ -778,5 +778,6 @@ module.exports = {
   selectRequiredJobs,
   candidateArtifactName,
   validateTrustedReusableRun,
+  verifyLocalArchiveBytes,
   verify,
 };

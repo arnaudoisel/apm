@@ -20,6 +20,7 @@ from tests.workflow_contracts import (
     load_workflow,
     shell_commands,
     shell_tokens,
+    wallclock_unit_commands,
     workflow_job,
     workflow_step,
     workflow_step_index,
@@ -32,7 +33,8 @@ INTEGRATION_WORKFLOW = ROOT / ".github/workflows/release-integration.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/build-release.yml"
 UNIX_TIMEOUT = "${{ inputs.integration-markers == 'lifecycle_smoke and not live' && 30 || 60 }}"
 UNIX_ARGS = (
-    "${{ inputs.evidence-variant != '' && '-p scripts.pytest_performance_evidence' || '' }} "
+    "${{ (inputs.evidence-variant != '' || inputs.wallclock-evidence) "
+    "&& '-p scripts.pytest_performance_evidence' || '' }} "
     "--splits ${{ inputs.shard-count }} --group ${{ inputs.shard-index }} "
     "--splitting-algorithm ${{ inputs.splitting-algorithm }} "
     "-n ${{ inputs.xdist-workers }} --dist loadgroup "
@@ -278,6 +280,7 @@ def _assert_windows_installer(workflow: dict) -> None:
     assert env["APM_BASELINE_VERSION"] == "v0.28.0"
     assert "APM_CANDIDATE_VERSION" in step["run"]
     assert "APM_CANDIDATE_SHA256" in step["run"]
+    assert 'Join-Path $env:RUNNER_TEMP "apm-windows-installer"' in step["run"]
     baseline = workflow_step(job, "Download historical upgrade source once")
     assert baseline["env"] == {"GH_TOKEN": "${{ github.token }}"}
     assert "gh release download $env:APM_BASELINE_VERSION" in baseline["run"]
@@ -297,9 +300,25 @@ def _assert_windows_installer(workflow: dict) -> None:
             "-ra",
             "--tb=short",
             "--junitxml=test-results/installer.xml",
+            "--basetemp",
+            "$installerBaseTemp",
         ],
         label="candidate Windows installer",
     )
+    executed = workflow_step(job, "Require executed installer assertions")
+    assert_exact_command(
+        shell_commands(executed),
+        [
+            "scripts/windows/run-installer-proof.ps1",
+            "-ValidateInstallerJUnit",
+            "test-results/installer.xml",
+            "-InstallerExitCode",
+            "0",
+        ],
+        label="non-skipped installer assertions",
+    )
+    assert_unconditional(executed, label="installer execution evidence")
+    assert not executed.get("continue-on-error", False)
 
 
 def test_installer_workflow_inputs_reach_the_actual_candidate_reader(tmp_path: Path) -> None:
@@ -337,6 +356,7 @@ def _assert_unit_call(workflow: dict, unit: dict) -> None:
         "binary-name": "${{ inputs.binary-name }}",
         "performance-probe": "${{ inputs.unit-performance-probe }}",
         "proposed-workers": "${{ inputs.performance-workers }}",
+        "wallclock-evidence": "${{ inputs.wallclock-evidence }}",
     }
     assert job["secrets"] == {
         "GH_CLI_PAT": "${{ secrets.GH_CLI_PAT }}",
@@ -351,7 +371,7 @@ def _assert_unit_call(workflow: dict, unit: dict) -> None:
     standard = workflow_step(baseline, "Run unit tests")
     assert standard["if"] == "inputs.platform != 'windows' && !inputs.performance-probe"
     assert_exact_command(
-        shell_commands(standard),
+        wallclock_unit_commands(standard, enabled=False),
         [
             "uv",
             "run",
@@ -528,6 +548,7 @@ def _assert_integration(workflow: dict, integration: dict) -> None:
     assert job["with"]["evidence-selection"] == (
         "tests/integration/ -m ${{ inputs.integration-markers }}"
     )
+    assert job["with"]["wallclock-evidence"] == "${{ inputs.wallclock-evidence }}"
     assert job["with"]["performance-cohort"] == (
         "${{ inputs.integration-performance-probe && inputs.platform != 'windows' && "
         "format('integration-{0}-{1}', github.run_attempt, inputs.binary-name) || '' }}"
@@ -607,7 +628,9 @@ def _assert_integration(workflow: dict, integration: dict) -> None:
         "${{ inputs.evidence-variant }}-shard-${{ inputs.shard-index }}"
     )
     timings_upload = workflow_step(integration_job, "Upload integration timings and outcomes")
-    assert timings_upload["if"] == "always() && inputs.platform != 'windows'"
+    assert timings_upload["if"] == (
+        "always() && (inputs.platform != 'windows' || inputs.wallclock-evidence)"
+    )
     assert timings_upload["with"]["if-no-files-found"] == "error"
     coverage_upload = workflow_step(integration_job, "Upload coverage data")
     assert coverage_upload["with"]["name"] == (

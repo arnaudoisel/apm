@@ -11,7 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from tests.workflow_contracts import load_workflow, shell_commands, workflow_job, workflow_step
+from tests.workflow_contracts import (
+    load_workflow,
+    wallclock_unit_commands,
+    workflow_job,
+    workflow_step,
+)
 
 pytestmark = pytest.mark.component
 
@@ -35,10 +40,24 @@ def _assert_windows_diagnostics(workflow: dict) -> None:
     linux = workflow_step(job, "Run unit tests")
     windows = workflow_step(job, "Run unit tests (Windows diagnostics)")
     assert linux["if"] == "inputs.platform != 'windows' && !inputs.performance-probe"
-    assert shell_commands(linux) == [TEST_COMMAND + PARALLEL_ARGS]
     assert windows["if"] == "inputs.platform == 'windows'"
     assert windows["timeout-minutes"] == 60
-    assert shell_commands(windows) == [[*TEST_COMMAND, *PARALLEL_ARGS, *DIAGNOSTIC_ARGS]]
+    for observed in (False, True):
+        command = TEST_COMMAND
+        if observed:
+            command = [
+                *TEST_COMMAND[:3],
+                "python",
+                "-m",
+                "pytest",
+                "-p",
+                "scripts.pytest_performance_evidence",
+                *TEST_COMMAND[4:],
+            ]
+        assert wallclock_unit_commands(linux, enabled=observed) == [command + PARALLEL_ARGS]
+        assert wallclock_unit_commands(windows, enabled=observed) == [
+            [*command, *PARALLEL_ARGS, *DIAGNOSTIC_ARGS]
+        ]
     assert windows["env"] == {
         "PYTHONUNBUFFERED": "1",
         "GITHUB_TOKEN": "${{ secrets.GH_MODELS_PAT }}",

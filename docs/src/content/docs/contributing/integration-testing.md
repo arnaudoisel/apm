@@ -647,6 +647,39 @@ source CI artifacts use bare names. Limit an evaluation to three full attempts,
 including invalid or image-inconclusive attempts. Production rollout requires
 passing proof plus a maintainer decision.
 
+### Actual release wall-clock proof
+
+Do not use modeled counterfactuals as proof. To measure real GitHub wall time
+before merge, apply the `ci-release-wallclock` PR label for an ad hoc run, or
+push the reviewed SHA to the workflow's dedicated control branch for a frozen
+comparison. The control ref avoids a moving PR merge ref changing the tested
+source after the baseline starts. Each trigger runs one proposed
+production-default DAG in `ci-release-wallclock.yml`, while a separate frozen
+baseline controller branch runs the original dependency ordering from the
+selected `main` source. Both sides are non-promotable and use no PATs, signing
+secrets, private-service acceptance, publication, or deployment scope.
+
+Compare only fresh attempt-1 run IDs recorded by the wall-clock protocol. Source
+identity and controller identity are recorded separately. The primary clock is
+the terminal `Verify wall-clock artifacts` job `completed_at` minus workflow
+`created_at`, including queue time; the secondary clock starts at actual
+`run_started_at`. Accept no result unless both workflows succeed, every included
+gate succeeds, all five native archives plus docs and wheel artifacts verify,
+and observer case inventory plus runner environment proof are present. The
+proposed wrapper preserves separate candidate-ready native evidence capture and
+serial verify / verified-native upload. All `wallclock-*` storage names are
+non-promotable. Workflow success alone is not a savings claim; cite two accepted
+run IDs and their actual primary and secondary clocks before claiming an
+improvement.
+
+For native Windows installer diagnostics, apply the optional
+`ci-windows-installer-proof` PR label. It runs one candidate through the same
+assertions at long and short roots, checks native exit/stderr controls, and
+retains the archive; this is diagnostic evidence, not whole-pipeline savings
+proof. Production Windows installer tests use a short pytest-owned
+`RUNNER_TEMP/apm-windows-installer` base temp, keep spaces and `&` fixture
+cases, and reject zero/skipped JUnit instead of treating pytest exit 0 as proof.
+
 ## Debugging Test Failures
 
 ### Smoke Test Failures
