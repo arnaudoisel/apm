@@ -1141,11 +1141,34 @@ jobs:
           mkdir -p wallclock-proof
           workflow_created_at="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '.created_at')"
           run_started_at="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '.run_started_at')"
+          run_head_sha="$(
+            python - <<'PY'
+          import json
+          import os
+
+          with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as handle:
+              event = json.load(handle)
+
+          if os.environ.get("GITHUB_EVENT_NAME") in {"pull_request", "pull_request_target"}:
+              value = event["pull_request"]["head"]["sha"]
+          elif os.environ.get("GITHUB_EVENT_NAME") == "push":
+              value = event["after"]
+              if value != os.environ["GITHUB_SHA"]:
+                  raise SystemExit("push event after does not match execution GITHUB_SHA")
+          else:
+              value = os.environ["GITHUB_SHA"]
+
+          print(value)
+          PY
+          )"
 
           cat > wallclock-proof/baseline-adapter-manifest.json <<MANIFEST
           {
             "kind": "apm-baseline-adapter-manifest",
             "non_promotable": true,
+            "source_sha": "${BASELINE_FROZEN_MAIN_SHA}",
+            "controller_sha": "${GITHUB_SHA}",
+            "run_head_sha": "${run_head_sha}",
             "frozen_source_sha": "${BASELINE_FROZEN_MAIN_SHA}",
             "frozen_workflow_blob": "${BASELINE_FROZEN_WORKFLOW_BLOB}",
             "frozen_workflow_sha256": "${BASELINE_FROZEN_WORKFLOW_SHA256}",
@@ -1162,6 +1185,7 @@ jobs:
               "smoke, integration, macOS validation, release-validation, archive preparation, docs build, and Python distribution build are retained as read-only baseline work",
               "archive preparation command body is preserved from the frozen workflow create-release job",
               "terminal job delegates verification authority to scripts.release_wallclock from tooling_sha",
+              "source_sha, controller_sha, and run_head_sha are recorded separately",
               "JUnit and output inventory are retained as baseline-test-output-* artifacts without PYTEST_ADDOPTS"
             ],
             "local_integration_points": {
