@@ -5,6 +5,7 @@ env:
   BASELINE_FROZEN_MAIN_SHA: 3162f7047c2585806cc9283044bad71a8b72f77a
   BASELINE_FROZEN_WORKFLOW_BLOB: b16710dad3a0e1fb35568a6a0b836b4e58112bbe
   BASELINE_FROZEN_WORKFLOW_SHA256: 1263318ba5b3e8938bad859ba7b09cb1d791887d74eda044b3cda25251401e80
+  BASELINE_TOOLING_SHA: PARENT_PROVIDED_TOOLING_SHA
 
 on:
   push:
@@ -68,6 +69,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --extra dev --extra build
 
+      - name: Prepare baseline test output directory
+        shell: bash
+        run: mkdir -p "${RUNNER_TEMP}/wallclock-junit"
+
       # Keep the installer gate ahead of the broad unit suite so an unrelated
       # platform test failure cannot hide installer-specific Windows evidence.
       - name: Test install.ps1 end-to-end (Windows)
@@ -84,7 +89,9 @@ jobs:
         if: matrix.platform != 'windows'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
+        run: >-
+          uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
+          --junitxml "${RUNNER_TEMP}/wallclock-junit/${{ matrix.binary_name }}-unit.xml"
 
       # Named starts/outcomes identify unfinished tests without dumping captures.
       # This bounds an opaque hang; it does not turn a timeout into success.
@@ -97,12 +104,26 @@ jobs:
         run: >-
           uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
           -vv --tb=short --show-capture=no --no-showlocals
+          --junitxml "${env:RUNNER_TEMP}\wallclock-junit\${{ matrix.binary_name }}-unit.xml"
 
-      - name: Run smoke tests
+      - name: Run smoke tests (Unix)
+        if: matrix.platform != 'windows'
         env:
           GITHUB_API_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
-        run: uv run pytest tests/integration/test_runtime_smoke.py -v
+        run: >-
+          uv run pytest tests/integration/test_runtime_smoke.py -v
+          --junitxml "${RUNNER_TEMP}/wallclock-junit/${{ matrix.binary_name }}-smoke.xml"
+
+      - name: Run smoke tests (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          GITHUB_API_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run pytest tests/integration/test_runtime_smoke.py -v
+          --junitxml "${env:RUNNER_TEMP}\wallclock-junit\${{ matrix.binary_name }}-smoke.xml"
 
       - name: Install UPX (Linux)
         if: matrix.platform == 'linux'
@@ -138,6 +159,14 @@ jobs:
           include-hidden-files: true  # Required to include .apm directories
           retention-days: 30
           if-no-files-found: error
+
+      - name: Upload baseline test output inventory
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: baseline-test-output-${{ matrix.binary_name }}
+          path: ${{ runner.temp }}/wallclock-junit
+          if-no-files-found: ignore
 
   # Consolidated macOS Intel build + validation.
   # Intel runners are plentiful (<1 min queue) so this runs on every push for
@@ -192,8 +221,13 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --extra dev --extra build
 
+      - name: Prepare baseline test output directory
+        run: mkdir -p "${RUNNER_TEMP}/wallclock-junit"
+
       - name: Run unit tests
-        run: uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
+        run: >-
+          uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
+          --junitxml "${RUNNER_TEMP}/wallclock-junit/apm-darwin-x86_64-unit.xml"
 
       # PHASE 1: BUILD BINARY
       - name: Build binary
@@ -210,7 +244,8 @@ jobs:
           uv run --frozen pytest \
             tests/integration/test_core_smoke.py::TestBinaryStartup::test_apm_version_runs \
             tests/integration/test_core_smoke.py::TestBinaryStartup::test_apm_rich_table_runs \
-            -vv -ra --tb=short
+            -vv -ra --tb=short \
+            --junitxml "${RUNNER_TEMP}/wallclock-junit/apm-darwin-x86_64-startup.xml"
 
       - name: Upload binary as workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -235,7 +270,7 @@ jobs:
           # binary. Live credential acceptance belongs to auth-acceptance.yml.
           # loadgroup preserves HOME-mutating test serialization.
           PYTEST_MARK_EXPR: "lifecycle_smoke and not live"
-          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup"
+          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup --junitxml ${{ runner.temp }}/wallclock-junit/apm-darwin-x86_64-integration.xml"
         run: |
           chmod +x scripts/test-integration.sh
           uv run ./scripts/test-integration.sh
@@ -265,6 +300,14 @@ jobs:
           chmod +x test-release-validation.sh
           ./test-release-validation.sh
         timeout-minutes: 20
+
+      - name: Upload baseline test output inventory
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: baseline-test-output-apm-darwin-x86_64
+          path: ${{ runner.temp }}/wallclock-junit
+          if-no-files-found: ignore
 
   # Consolidated macOS ARM build + validation.
   # ARM runners (macos-latest) are extremely scarce - 2-4+ hour queue waits are
@@ -314,8 +357,13 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --extra dev --extra build
 
+      - name: Prepare baseline test output directory
+        run: mkdir -p "${RUNNER_TEMP}/wallclock-junit"
+
       - name: Run unit tests
-        run: uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
+        run: >-
+          uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
+          --junitxml "${RUNNER_TEMP}/wallclock-junit/apm-darwin-arm64-unit.xml"
 
       # PHASE 1: BUILD BINARY
       - name: Build binary
@@ -332,7 +380,8 @@ jobs:
           uv run --frozen pytest \
             tests/integration/test_core_smoke.py::TestBinaryStartup::test_apm_version_runs \
             tests/integration/test_core_smoke.py::TestBinaryStartup::test_apm_rich_table_runs \
-            -vv -ra --tb=short
+            -vv -ra --tb=short \
+            --junitxml "${RUNNER_TEMP}/wallclock-junit/apm-darwin-arm64-startup.xml"
 
       - name: Upload binary as workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -359,7 +408,7 @@ jobs:
           # home_env xdist_group markers that keep HOME-mutating tests
           # serialized on a single worker.
           PYTEST_MARK_EXPR: "not live"
-          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup"
+          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup --junitxml ${{ runner.temp }}/wallclock-junit/apm-darwin-arm64-integration.xml"
         run: |
           chmod +x scripts/test-integration.sh
           uv run ./scripts/test-integration.sh
@@ -389,6 +438,14 @@ jobs:
           chmod +x test-release-validation.sh
           ./test-release-validation.sh
         timeout-minutes: 20
+
+      - name: Upload baseline test output inventory
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: baseline-test-output-apm-darwin-arm64
+          path: ${{ runner.temp }}/wallclock-junit
+          if-no-files-found: ignore
 
   # Integration tests with full source code access (Linux + Windows).
   # macOS integration tests run inside the consolidated macOS jobs to avoid re-queuing scarce runners.
@@ -470,6 +527,10 @@ jobs:
       - name: Install test dependencies
         run: uv sync --frozen --extra dev
 
+      - name: Prepare baseline test output directory
+        shell: bash
+        run: mkdir -p "${RUNNER_TEMP}/wallclock-junit"
+
       - name: Run integration tests (Unix)
         if: matrix.platform != 'windows'
         env:
@@ -479,7 +540,7 @@ jobs:
           # below the merge gate's aggregate width while loadgroup preserves
           # xdist_group serialization for HOME-mutating tests.
           PYTEST_MARK_EXPR: "not live"
-          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup"
+          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup --junitxml ${{ runner.temp }}/wallclock-junit/${{ matrix.binary_name }}-integration.xml"
         run: |
           chmod +x scripts/test-integration.sh
           uv run ./scripts/test-integration.sh
@@ -491,9 +552,19 @@ jobs:
         env:
           APM_E2E_TESTS: "1"
           GITHUB_API_TOKEN: ${{ github.token }}
+          PYTEST_EXTRA_ARGS: >-
+            --junitxml ${{ runner.temp }}\wallclock-junit\${{ matrix.binary_name }}-integration.xml
         run: |
           uv run pwsh scripts/windows/test-integration.ps1 -SkipBuild
         timeout-minutes: 20
+
+      - name: Upload baseline test output inventory
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: baseline-test-output-${{ matrix.binary_name }}-integration
+          path: ${{ runner.temp }}/wallclock-junit
+          if-no-files-found: ignore
 
   # Release validation tests - Final baseline validation of shipped binary (Linux + Windows).
   # macOS release validation runs inside the consolidated macOS jobs.
@@ -820,7 +891,7 @@ jobs:
           if-no-files-found: error
 
   baseline-terminal:
-    name: Baseline Terminal Verification
+    name: Verify wall-clock artifacts
     runs-on: ubuntu-latest
     if: always()
     needs:
@@ -837,90 +908,67 @@ jobs:
       contents: read
 
     steps:
+      - name: Checkout frozen source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASELINE_FROZEN_MAIN_SHA }}
+          path: baseline-frozen-source
+          persist-credentials: false
+
+      - name: Verify frozen source checkout
+        shell: bash
+        run: test "$(git -C baseline-frozen-source rev-parse HEAD)" = "${BASELINE_FROZEN_MAIN_SHA}"
+
+      - name: Checkout wall-clock tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASELINE_TOOLING_SHA }}
+          path: wallclock-tooling
+          persist-credentials: false
+
       - name: Download baseline platform archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: baseline-platform-archives
-          path: baseline-platform-archives
+          path: wallclock-native-root/archives
+
+      - name: Download raw platform artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: apm-*
+          path: wallclock-native-root/raw
+          merge-multiple: false
 
       - name: Download Python distributions
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pypi-distributions
-          path: baseline-pypi-distributions
+          path: wallclock-python-root
 
       - name: Download docs build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: baseline-docs-build
-          path: baseline-docs-build
+          path: wallclock-docs-root
 
-      - name: Verify complete baseline result
+      - name: Download baseline test output inventory
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: baseline-test-output-*
+          path: wallclock-test-output
+          merge-multiple: false
+
+      - name: Prepare baseline adapter manifest
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_AND_TEST_RESULT: ${{ needs.build-and-test.result }}
-          MACOS_INTEL_RESULT: ${{ needs.build-and-validate-macos-intel.result }}
-          MACOS_ARM_RESULT: ${{ needs.build-and-validate-macos-arm.result }}
-          INTEGRATION_TESTS_RESULT: ${{ needs.integration-tests.result }}
-          RELEASE_VALIDATION_RESULT: ${{ needs.release-validation.result }}
-          PREPARE_ARCHIVES_RESULT: ${{ needs.prepare-baseline-archives.result }}
-          BUILD_DOCS_RESULT: ${{ needs.build-docs.result }}
-          BUILD_PYPI_RESULT: ${{ needs.build-pypi-distributions.result }}
         run: |
           set -euo pipefail
 
-          for item in \
-            "build-and-test=${BUILD_AND_TEST_RESULT}" \
-            "build-and-validate-macos-intel=${MACOS_INTEL_RESULT}" \
-            "build-and-validate-macos-arm=${MACOS_ARM_RESULT}" \
-            "integration-tests=${INTEGRATION_TESTS_RESULT}" \
-            "release-validation=${RELEASE_VALIDATION_RESULT}" \
-            "prepare-baseline-archives=${PREPARE_ARCHIVES_RESULT}" \
-            "build-docs=${BUILD_DOCS_RESULT}" \
-            "build-pypi-distributions=${BUILD_PYPI_RESULT}"; do
-            name="${item%%=*}"
-            result="${item#*=}"
-            if [ "$result" != "success" ]; then
-              echo "::error::Required baseline job did not succeed: ${name}=${result}"
-              exit 1
-            fi
-          done
-
-          cd baseline-platform-archives
-          archive_count="$(find . -maxdepth 1 -type f \( -name 'apm-*.tar.gz' -o -name 'apm-*.zip' \) | wc -l | tr -d ' ')"
-          sidecar_count="$(find . -maxdepth 1 -type f \( -name 'apm-*.tar.gz.sha256' -o -name 'apm-*.zip.sha256' \) | wc -l | tr -d ' ')"
-          test "$archive_count" = "5"
-          test "$sidecar_count" = "5"
-
-          for sidecar in apm-*.sha256; do
-            sha256sum -c "$sidecar"
-          done
-
-          for binary in apm-linux-x86_64 apm-linux-arm64 apm-darwin-x86_64 apm-darwin-arm64; do
-            tar -tzf "${binary}.tar.gz" | grep -Fx "${binary}/apm"
-            mode="$(tar -tvzf "${binary}.tar.gz" "${binary}/apm" | awk '{ print $1; exit }')"
-            case "$mode" in
-              *x*) ;;
-              *)
-                echo "::error::Archive ${binary}.tar.gz does not preserve an executable apm file"
-                exit 1
-                ;;
-            esac
-          done
-          unzip -l apm-windows-x86_64.zip apm-windows-x86_64/apm.exe
-          cd ..
-
-          wheel_count="$(find baseline-pypi-distributions -maxdepth 1 -type f -name '*.whl' | wc -l | tr -d ' ')"
-          sdist_count="$(find baseline-pypi-distributions -maxdepth 1 -type f -name '*.tar.gz' | wc -l | tr -d ' ')"
-          test "$wheel_count" -ge "1"
-          test "$sdist_count" -ge "1"
-          test -f baseline-docs-build/index.html
-
+          mkdir -p wallclock-proof
           workflow_created_at="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '.created_at')"
           run_started_at="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '.run_started_at')"
-          terminal_observed_completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-          cat > baseline-adapter-manifest.json <<MANIFEST
+          cat > wallclock-proof/baseline-adapter-manifest.json <<MANIFEST
           {
             "kind": "apm-baseline-adapter-manifest",
             "non_promotable": true,
@@ -928,9 +976,9 @@ jobs:
             "frozen_workflow_blob": "${BASELINE_FROZEN_WORKFLOW_BLOB}",
             "frozen_workflow_sha256": "${BASELINE_FROZEN_WORKFLOW_SHA256}",
             "controller_definition_sha": "${GITHUB_SHA}",
+            "tooling_sha": "${BASELINE_TOOLING_SHA}",
             "workflow_created_at": "${workflow_created_at}",
             "run_started_at": "${run_started_at}",
-            "terminal_observed_completed_at": "${terminal_observed_completed_at}",
             "adaptations": [
               "trigger limited to push on danielmeppiel-release-baseline-clock",
               "all source checkouts pin ref to frozen_source_sha and disable persisted credentials",
@@ -939,24 +987,50 @@ jobs:
               "Windows pinned public installer test remains before broad Windows units",
               "smoke, integration, macOS validation, release-validation, archive preparation, docs build, and Python distribution build are retained as read-only baseline work",
               "archive preparation command body is preserved from the frozen workflow create-release job",
-              "terminal job verifies all required jobs, five platform archives, five hash sidecars, executable payloads, Python distributions, and docs build",
-              "observer and JUnit integration are reserved for parent-supplied common ABI; this workflow emits only distinctive baseline-benchmark-proof artifacts"
+              "terminal job delegates verification authority to scripts.release_wallclock from tooling_sha",
+              "JUnit and output inventory are retained as baseline-test-output-* artifacts without PYTEST_ADDOPTS"
             ],
             "local_integration_points": {
-              "platform_archives_artifact": "baseline-platform-archives",
-              "docs_build_artifact": "baseline-docs-build",
-              "python_distribution_artifact": "pypi-distributions",
-              "terminal_manifest": "baseline-adapter-manifest.json",
-              "benchmark_proof_artifact": "baseline-benchmark-proof",
+              "native_root": "wallclock-native-root",
+              "docs_root": "wallclock-docs-root",
+              "python_root": "wallclock-python-root",
+              "test_output_root": "wallclock-test-output",
+              "adapter_manifest": "wallclock-proof/baseline-adapter-manifest.json",
+              "proof_json": "wallclock-proof/proof.json",
+              "job_observer_json": "wallclock-proof/baseline-terminal-job.json",
+              "proof_artifact": "wallclock-baseline-proof-1",
               "queue_inclusive_measurement": "workflow_created_at to GitHub terminal job completed_at",
               "run_started_at_source": "Actions workflow-run API run_started_at"
             }
           }
           MANIFEST
 
-      - name: Upload baseline benchmark proof
+      - name: Record baseline terminal observer
+        run: >-
+          python -m scripts.release_wallclock record-job
+          --side baseline
+          --source-root "${GITHUB_WORKSPACE}/baseline-frozen-source"
+          --source-sha "${BASELINE_FROZEN_MAIN_SHA}"
+          --output "${GITHUB_WORKSPACE}/wallclock-proof/baseline-terminal-job.json"
+        working-directory: wallclock-tooling
+
+      - name: Verify baseline wall-clock artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python -m scripts.release_wallclock verify
+          --side baseline
+          --source-root "${GITHUB_WORKSPACE}/baseline-frozen-source"
+          --source-sha "${BASELINE_FROZEN_MAIN_SHA}"
+          --native-root "${GITHUB_WORKSPACE}/wallclock-native-root"
+          --docs-root "${GITHUB_WORKSPACE}/wallclock-docs-root"
+          --python-root "${GITHUB_WORKSPACE}/wallclock-python-root"
+          --output "${GITHUB_WORKSPACE}/wallclock-proof/proof.json"
+        working-directory: wallclock-tooling
+
+      - name: Upload baseline wall-clock proof
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: baseline-benchmark-proof
-          path: baseline-adapter-manifest.json
+          name: wallclock-baseline-proof-1
+          path: wallclock-proof
           if-no-files-found: error
