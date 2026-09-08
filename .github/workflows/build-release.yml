@@ -848,6 +848,9 @@ jobs:
         env:
           APM_E2E_TESTS: "1"
           GITHUB_API_TOKEN: ${{ github.token }}
+          # Frozen main's Windows helper only recognizes legacy token variable
+          # names. This is the default read-only job token, not a PAT secret.
+          GITHUB_APM_PAT: ${{ github.token }}
         run: |
           cd D:\apm-isolated-test
           .\scripts\windows\test-release-validation.ps1
@@ -1181,6 +1184,7 @@ jobs:
               "all source checkouts pin ref to frozen_source_sha and disable persisted credentials",
               "tag, main, schedule, repository_dispatch, release creation, issue writing, external postpublish, PyPI publish, Pages deploy, environments, write permissions, and id-token permissions removed",
               "secret references removed; public GitHub API token paths use the default read-only github.token",
+              "Windows isolated release validation bridges frozen main's legacy GITHUB_APM_PAT variable name to the default read-only github.token only for public prerequisite checks",
               "Windows pinned public installer test remains before broad Windows units",
               "smoke, integration, macOS validation, release-validation, archive preparation, docs build, and Python distribution build are retained as read-only baseline work",
               "archive preparation command body is preserved from the frozen workflow create-release job",
