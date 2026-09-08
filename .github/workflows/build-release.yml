@@ -5,7 +5,7 @@ env:
   BASELINE_FROZEN_MAIN_SHA: 3162f7047c2585806cc9283044bad71a8b72f77a
   BASELINE_FROZEN_WORKFLOW_BLOB: b16710dad3a0e1fb35568a6a0b836b4e58112bbe
   BASELINE_FROZEN_WORKFLOW_SHA256: 1263318ba5b3e8938bad859ba7b09cb1d791887d74eda044b3cda25251401e80
-  BASELINE_TOOLING_SHA: PARENT_PROVIDED_TOOLING_SHA
+  TOOLING_SHA: PARENT_PROVIDED_TOOLING_SHA
 
 on:
   push:
@@ -59,8 +59,8 @@ jobs:
       - name: Guard baseline tooling SHA
         shell: bash
         run: |
-          if [ "${BASELINE_TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${BASELINE_TOOLING_SHA}" ]; then
-            echo "::error::BASELINE_TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
+          if [ "${TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${TOOLING_SHA}" ]; then
+            echo "::error::TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
             exit 1
           fi
 
@@ -69,7 +69,7 @@ jobs:
         run: |
           git init "${RUNNER_TEMP}/wallclock-tooling"
           git -C "${RUNNER_TEMP}/wallclock-tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "${RUNNER_TEMP}/wallclock-tooling" fetch --depth=1 origin "${BASELINE_TOOLING_SHA}"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" fetch --depth=1 origin "${TOOLING_SHA}"
           git -C "${RUNNER_TEMP}/wallclock-tooling" checkout --detach FETCH_HEAD
 
       - name: Install baseline pytest evidence plugin
@@ -234,8 +234,8 @@ jobs:
 
       - name: Guard baseline tooling SHA
         run: |
-          if [ "${BASELINE_TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${BASELINE_TOOLING_SHA}" ]; then
-            echo "::error::BASELINE_TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
+          if [ "${TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${TOOLING_SHA}" ]; then
+            echo "::error::TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
             exit 1
           fi
 
@@ -243,7 +243,7 @@ jobs:
         run: |
           git init "${RUNNER_TEMP}/wallclock-tooling"
           git -C "${RUNNER_TEMP}/wallclock-tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "${RUNNER_TEMP}/wallclock-tooling" fetch --depth=1 origin "${BASELINE_TOOLING_SHA}"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" fetch --depth=1 origin "${TOOLING_SHA}"
           git -C "${RUNNER_TEMP}/wallclock-tooling" checkout --detach FETCH_HEAD
 
       - name: Install baseline pytest evidence plugin
@@ -409,8 +409,8 @@ jobs:
 
       - name: Guard baseline tooling SHA
         run: |
-          if [ "${BASELINE_TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${BASELINE_TOOLING_SHA}" ]; then
-            echo "::error::BASELINE_TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
+          if [ "${TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${TOOLING_SHA}" ]; then
+            echo "::error::TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
             exit 1
           fi
 
@@ -418,7 +418,7 @@ jobs:
         run: |
           git init "${RUNNER_TEMP}/wallclock-tooling"
           git -C "${RUNNER_TEMP}/wallclock-tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "${RUNNER_TEMP}/wallclock-tooling" fetch --depth=1 origin "${BASELINE_TOOLING_SHA}"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" fetch --depth=1 origin "${TOOLING_SHA}"
           git -C "${RUNNER_TEMP}/wallclock-tooling" checkout --detach FETCH_HEAD
 
       - name: Install baseline pytest evidence plugin
@@ -597,8 +597,8 @@ jobs:
       - name: Guard baseline tooling SHA
         shell: bash
         run: |
-          if [ "${BASELINE_TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${BASELINE_TOOLING_SHA}" ]; then
-            echo "::error::BASELINE_TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
+          if [ "${TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${TOOLING_SHA}" ]; then
+            echo "::error::TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
             exit 1
           fi
 
@@ -607,7 +607,7 @@ jobs:
         run: |
           git init "${RUNNER_TEMP}/wallclock-tooling"
           git -C "${RUNNER_TEMP}/wallclock-tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "${RUNNER_TEMP}/wallclock-tooling" fetch --depth=1 origin "${BASELINE_TOOLING_SHA}"
+          git -C "${RUNNER_TEMP}/wallclock-tooling" fetch --depth=1 origin "${TOOLING_SHA}"
           git -C "${RUNNER_TEMP}/wallclock-tooling" checkout --detach FETCH_HEAD
 
       - name: Install baseline pytest evidence plugin
@@ -1088,15 +1088,15 @@ jobs:
       - name: Guard baseline tooling SHA
         shell: bash
         run: |
-          if [ "${BASELINE_TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${BASELINE_TOOLING_SHA}" ]; then
-            echo "::error::BASELINE_TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
+          if [ "${TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${TOOLING_SHA}" ]; then
+            echo "::error::TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
             exit 1
           fi
 
       - name: Checkout wall-clock tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.BASELINE_TOOLING_SHA }}
+          ref: ${{ env.TOOLING_SHA }}
           path: wallclock-tooling
           persist-credentials: false
 
@@ -1150,7 +1150,7 @@ jobs:
             "frozen_workflow_blob": "${BASELINE_FROZEN_WORKFLOW_BLOB}",
             "frozen_workflow_sha256": "${BASELINE_FROZEN_WORKFLOW_SHA256}",
             "controller_definition_sha": "${GITHUB_SHA}",
-            "tooling_sha": "${BASELINE_TOOLING_SHA}",
+            "tooling_sha": "${TOOLING_SHA}",
             "workflow_created_at": "${workflow_created_at}",
             "run_started_at": "${run_started_at}",
             "adaptations": [
