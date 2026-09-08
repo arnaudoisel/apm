@@ -595,6 +595,45 @@ describe("candidate manifest and publication verification", () => {
     });
   });
 
+  it("accepts Windows CRLF checksum sidecars while preserving digest checks", () => {
+    const root = makeTemp();
+    const artifactRoot = path.join(root, "candidate-artifacts");
+    writeCandidateFiles(artifactRoot);
+    const archive = rc.archiveName("apm-windows-x86_64");
+    const sidecar = path.join(
+      artifactRoot,
+      "apm-windows-x86_64",
+      "release-assets",
+      `${archive}.sha256`,
+    );
+    const digest = fs.readFileSync(sidecar, "ascii").split("  ")[0];
+    fs.writeFileSync(sidecar, `${digest}  ${archive}\r\n`, "ascii");
+
+    const inventory = rc.collectArchiveInventory({ artifactRoot, catalog: catalog(), sha: SHA });
+
+    assert.equal(inventory["apm-windows-x86_64"].archive, archive);
+  });
+
+  it("rejects checksum sidecars with the wrong archive name", () => {
+    const root = makeTemp();
+    const artifactRoot = path.join(root, "candidate-artifacts");
+    writeCandidateFiles(artifactRoot);
+    const archive = rc.archiveName("apm-windows-x86_64");
+    const sidecar = path.join(
+      artifactRoot,
+      "apm-windows-x86_64",
+      "release-assets",
+      `${archive}.sha256`,
+    );
+    const digest = fs.readFileSync(sidecar, "ascii").split("  ")[0];
+    fs.writeFileSync(sidecar, `${digest}  wrong.zip\r\n`, "ascii");
+
+    assert.throws(
+      () => rc.collectArchiveInventory({ artifactRoot, catalog: catalog(), sha: SHA }),
+      /Candidate checksum sidecar mismatch for apm-windows-x86_64\.zip/,
+    );
+  });
+
   it("rejects legacy bare artifact names and tells operators to rerun all jobs", async () => {
     const root = makeTemp();
     writeRequiredConfig(root);

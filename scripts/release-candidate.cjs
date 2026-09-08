@@ -176,6 +176,13 @@ function requireFreshArtifact(artifact, label) {
   requireArtifactDigest(artifact.digest, label);
 }
 
+function assertChecksumSidecar(sidecarPath, digest, archive) {
+  const sidecar = fs.readFileSync(sidecarPath, "utf8").trimEnd();
+  if (sidecar !== `${digest}  ${archive}`) {
+    throw new Error(`Candidate checksum sidecar mismatch for ${archive}`);
+  }
+}
+
 function findOneArtifactByName(artifacts, name) {
   const matches = artifacts.filter((artifact) => artifact.name === name);
   if (matches.length !== 1) {
@@ -386,10 +393,7 @@ function collectArchiveInventory({ artifactRoot, catalog, sha }) {
     if (!/^[0-9a-f]{64}$/.test(String(metadata.executable_sha256 || ""))) {
       throw new Error(`Candidate ${binaryName} executable digest is missing or malformed`);
     }
-    const sidecar = fs.readFileSync(sidecarPath, "utf8");
-    if (sidecar !== `${digest}  ${archive}\n`) {
-      throw new Error(`Candidate ${archive} checksum sidecar does not match`);
-    }
+    assertChecksumSidecar(sidecarPath, digest, archive);
     platforms[binaryName] = {
       runner: row.runner,
       platform: row.platform,
@@ -680,10 +684,7 @@ function verifyLocalArchiveBytes({ evidence, catalog, artifactRoot, outputRoot }
     if (platform.archive_sha256 !== digest) {
       throw new Error(`Candidate archive digest mismatch for ${archive}`);
     }
-    const sidecar = fs.readFileSync(sidecarPath, "utf8");
-    if (sidecar !== `${digest}  ${archive}\n`) {
-      throw new Error(`Candidate checksum sidecar mismatch for ${archive}`);
-    }
+    assertChecksumSidecar(sidecarPath, digest, archive);
     fs.copyFileSync(archivePath, path.join(outputRoot, archive));
     fs.copyFileSync(sidecarPath, path.join(outputRoot, `${archive}.sha256`));
   }
