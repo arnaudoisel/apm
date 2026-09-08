@@ -597,7 +597,9 @@ def _has_applicable_http_authorization(
     headers: Sequence[GitConfigEntry],
     env: dict[str, str],
 ) -> bool:
-    """Ask Git which URL-scoped extra headers apply to one remote."""
+    """Ask Git which URL-scoped extra headers apply to one HTTP(S) remote."""
+    if urlsplit(remote_url).scheme.lower() not in {"http", "https"}:
+        return False
     direct_header = env.get("GIT_HTTP_EXTRAHEADER", "")
     if _is_valid_http_extraheader_value(direct_header) and _is_credential_bearing_http_header(
         direct_header
@@ -657,7 +659,7 @@ def _urlmatched_header_group(
     if result.returncode == 1:
         return ()
     if result.returncode != 0 or not isinstance(result.stdout, bytes):
-        raise GitUrlRewriteProbeError("Git URL-match probe failed")
+        raise GitUrlRewriteProbeError(f"Git URL-match probe exited with status {result.returncode}")
     selected = result.stdout.rstrip(b"\0\n")
     prefix = b"X-Apm-Config-Probe: "
     if not selected.startswith(prefix):
