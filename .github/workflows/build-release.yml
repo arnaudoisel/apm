@@ -75,10 +75,9 @@ jobs:
       - name: Install baseline pytest evidence plugin
         shell: bash
         run: |
-          mkdir -p "${RUNNER_TEMP}/wallclock-pytest-plugins"
           cp \
             "${RUNNER_TEMP}/wallclock-tooling/scripts/pytest_performance_evidence.py" \
-            "${RUNNER_TEMP}/wallclock-pytest-plugins/baseline_pytest_performance_evidence.py"
+            "${GITHUB_WORKSPACE}/_apm_wallclock_evidence.py"
 
       - name: Record baseline job observer
         shell: bash
@@ -115,11 +114,10 @@ jobs:
         shell: pwsh
         env:
           APM_E2E_TESTS: "1"
-          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: >-
-          uv run --frozen pytest
+          uv run --frozen python -m pytest
           tests/integration/test_windows_installer_launchers.py
-          -p baseline_pytest_performance_evidence
+          -p _apm_wallclock_evidence
           --junitxml "${env:RUNNER_TEMP}\wallclock-junit\${{ matrix.binary_name }}-installer.xml"
           -vv -ra --tb=short
 
@@ -127,10 +125,9 @@ jobs:
         if: matrix.platform != 'windows'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: >-
-          uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
-          -p baseline_pytest_performance_evidence
+          uv run python -m pytest tests/unit tests/test_console.py -n auto --dist worksteal
+          -p _apm_wallclock_evidence
           --junitxml "${RUNNER_TEMP}/wallclock-junit/${{ matrix.binary_name }}-unit.xml"
 
       # Named starts/outcomes identify unfinished tests without dumping captures.
@@ -141,10 +138,9 @@ jobs:
         env:
           PYTHONUNBUFFERED: "1"
           GITHUB_TOKEN: ${{ github.token }}
-          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: >-
-          uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
-          -p baseline_pytest_performance_evidence
+          uv run python -m pytest tests/unit tests/test_console.py -n auto --dist worksteal
+          -p _apm_wallclock_evidence
           -vv --tb=short --show-capture=no --no-showlocals
           --junitxml "${env:RUNNER_TEMP}\wallclock-junit\${{ matrix.binary_name }}-unit.xml"
 
@@ -153,10 +149,9 @@ jobs:
         env:
           GITHUB_API_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
-          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: >-
-          uv run pytest tests/integration/test_runtime_smoke.py -v
-          -p baseline_pytest_performance_evidence
+          uv run python -m pytest tests/integration/test_runtime_smoke.py -v
+          -p _apm_wallclock_evidence
           --junitxml "${RUNNER_TEMP}/wallclock-junit/${{ matrix.binary_name }}-smoke.xml"
 
       - name: Run smoke tests (Windows)
@@ -165,10 +160,9 @@ jobs:
         env:
           GITHUB_API_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
-          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: >-
-          uv run pytest tests/integration/test_runtime_smoke.py -v
-          -p baseline_pytest_performance_evidence
+          uv run python -m pytest tests/integration/test_runtime_smoke.py -v
+          -p _apm_wallclock_evidence
           --junitxml "${env:RUNNER_TEMP}\wallclock-junit\${{ matrix.binary_name }}-smoke.xml"
 
       - name: Install UPX (Linux)
@@ -254,10 +248,9 @@ jobs:
 
       - name: Install baseline pytest evidence plugin
         run: |
-          mkdir -p "${RUNNER_TEMP}/wallclock-pytest-plugins"
           cp \
             "${RUNNER_TEMP}/wallclock-tooling/scripts/pytest_performance_evidence.py" \
-            "${RUNNER_TEMP}/wallclock-pytest-plugins/baseline_pytest_performance_evidence.py"
+            "${GITHUB_WORKSPACE}/_apm_wallclock_evidence.py"
 
       - name: Record baseline job observer
         run: |
@@ -304,11 +297,9 @@ jobs:
         run: mkdir -p "${RUNNER_TEMP}/wallclock-junit"
 
       - name: Run unit tests
-        env:
-          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: >-
-          uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
-          -p baseline_pytest_performance_evidence
+          uv run python -m pytest tests/unit tests/test_console.py -n auto --dist worksteal
+          -p _apm_wallclock_evidence
           --junitxml "${RUNNER_TEMP}/wallclock-junit/apm-darwin-x86_64-unit.xml"
 
       # PHASE 1: BUILD BINARY
@@ -321,13 +312,12 @@ jobs:
         env:
           APM_E2E_TESTS: "1"
           APM_BINARY_PATH: ${{ github.workspace }}/dist/apm-darwin-x86_64/apm
-          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: |
           test -x "$APM_BINARY_PATH"
-          uv run --frozen pytest \
+          uv run --frozen python -m pytest \
             tests/integration/test_core_smoke.py::TestBinaryStartup::test_apm_version_runs \
             tests/integration/test_core_smoke.py::TestBinaryStartup::test_apm_rich_table_runs \
-            -p baseline_pytest_performance_evidence \
+            -p _apm_wallclock_evidence \
             -vv -ra --tb=short \
             --junitxml "${RUNNER_TEMP}/wallclock-junit/apm-darwin-x86_64-startup.xml"
 
@@ -350,12 +340,11 @@ jobs:
         env:
           APM_E2E_TESTS: "1"
           GITHUB_API_TOKEN: ${{ github.token }}
-          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
           # Intel validates the promoted lifecycle subset against its native
           # binary. Live credential acceptance belongs to auth-acceptance.yml.
           # loadgroup preserves HOME-mutating test serialization.
           PYTEST_MARK_EXPR: "lifecycle_smoke and not live"
-          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup -p baseline_pytest_performance_evidence --junitxml ${{ runner.temp }}/wallclock-junit/apm-darwin-x86_64-integration.xml"
+          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup -p _apm_wallclock_evidence --junitxml ${{ runner.temp }}/wallclock-junit/apm-darwin-x86_64-integration.xml"
         run: |
           chmod +x scripts/test-integration.sh
           uv run ./scripts/test-integration.sh
@@ -434,10 +423,9 @@ jobs:
 
       - name: Install baseline pytest evidence plugin
         run: |
-          mkdir -p "${RUNNER_TEMP}/wallclock-pytest-plugins"
           cp \
             "${RUNNER_TEMP}/wallclock-tooling/scripts/pytest_performance_evidence.py" \
-            "${RUNNER_TEMP}/wallclock-pytest-plugins/baseline_pytest_performance_evidence.py"
+            "${GITHUB_WORKSPACE}/_apm_wallclock_evidence.py"
 
       - name: Record baseline job observer
         run: |
@@ -479,11 +467,9 @@ jobs:
         run: mkdir -p "${RUNNER_TEMP}/wallclock-junit"
 
       - name: Run unit tests
-        env:
-          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: >-
-          uv run pytest tests/unit tests/test_console.py -n auto --dist worksteal
-          -p baseline_pytest_performance_evidence
+          uv run python -m pytest tests/unit tests/test_console.py -n auto --dist worksteal
+          -p _apm_wallclock_evidence
           --junitxml "${RUNNER_TEMP}/wallclock-junit/apm-darwin-arm64-unit.xml"
 
       # PHASE 1: BUILD BINARY
@@ -496,13 +482,12 @@ jobs:
         env:
           APM_E2E_TESTS: "1"
           APM_BINARY_PATH: ${{ github.workspace }}/dist/apm-darwin-arm64/apm
-          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
         run: |
           test -x "$APM_BINARY_PATH"
-          uv run --frozen pytest \
+          uv run --frozen python -m pytest \
             tests/integration/test_core_smoke.py::TestBinaryStartup::test_apm_version_runs \
             tests/integration/test_core_smoke.py::TestBinaryStartup::test_apm_rich_table_runs \
-            -p baseline_pytest_performance_evidence \
+            -p _apm_wallclock_evidence \
             -vv -ra --tb=short \
             --junitxml "${RUNNER_TEMP}/wallclock-junit/apm-darwin-arm64-startup.xml"
 
@@ -525,14 +510,13 @@ jobs:
         env:
           APM_E2E_TESTS: "1"
           GITHUB_API_TOKEN: ${{ github.token }}
-          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
           # Scarce ARM runners force the full suite onto one runner, so
           # parallelise the non-live corpus in-process with xdist.
           # --dist loadgroup honors the
           # home_env xdist_group markers that keep HOME-mutating tests
           # serialized on a single worker.
           PYTEST_MARK_EXPR: "not live"
-          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup -p baseline_pytest_performance_evidence --junitxml ${{ runner.temp }}/wallclock-junit/apm-darwin-arm64-integration.xml"
+          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup -p _apm_wallclock_evidence --junitxml ${{ runner.temp }}/wallclock-junit/apm-darwin-arm64-integration.xml"
         run: |
           chmod +x scripts/test-integration.sh
           uv run ./scripts/test-integration.sh
@@ -629,10 +613,9 @@ jobs:
       - name: Install baseline pytest evidence plugin
         shell: bash
         run: |
-          mkdir -p "${RUNNER_TEMP}/wallclock-pytest-plugins"
           cp \
             "${RUNNER_TEMP}/wallclock-tooling/scripts/pytest_performance_evidence.py" \
-            "${RUNNER_TEMP}/wallclock-pytest-plugins/baseline_pytest_performance_evidence.py"
+            "${GITHUB_WORKSPACE}/_apm_wallclock_evidence.py"
 
       - name: Record baseline job observer
         shell: bash
@@ -697,12 +680,11 @@ jobs:
         env:
           APM_E2E_TESTS: "1"
           GITHUB_API_TOKEN: ${{ github.token }}
-          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
           # The tag gate runs the non-live corpus on one runner. Four workers stay
           # below the merge gate's aggregate width while loadgroup preserves
           # xdist_group serialization for HOME-mutating tests.
           PYTEST_MARK_EXPR: "not live"
-          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup -p baseline_pytest_performance_evidence --junitxml ${{ runner.temp }}/wallclock-junit/${{ matrix.binary_name }}-integration.xml"
+          PYTEST_EXTRA_ARGS: "-n 4 --dist loadgroup -p _apm_wallclock_evidence --junitxml ${{ runner.temp }}/wallclock-junit/${{ matrix.binary_name }}-integration.xml"
         run: |
           chmod +x scripts/test-integration.sh
           uv run ./scripts/test-integration.sh
@@ -714,9 +696,8 @@ jobs:
         env:
           APM_E2E_TESTS: "1"
           GITHUB_API_TOKEN: ${{ github.token }}
-          PYTHONPATH: ${{ runner.temp }}/wallclock-pytest-plugins
           PYTEST_EXTRA_ARGS: >-
-            -p baseline_pytest_performance_evidence
+            -p _apm_wallclock_evidence
             --junitxml ${{ runner.temp }}\wallclock-junit\${{ matrix.binary_name }}-integration.xml
         run: |
           $outputDir = Join-Path $env:RUNNER_TEMP "wallclock-output"
