@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Installing a private Git dependency no longer fails with `Unable to verify Git URL rewrite safety` when a `url.<ssh-target>.insteadOf` rule rewrites the fetched HTTPS URL to SSH. The `http.extraHeader` URL-match probe now runs only for HTTP(S) effective URLs, because Git rejects SCP-style targets such as `git@github.com:owner/repo`. (#2898)
+- Installing a private Git dependency no longer fails with `Unable to verify Git URL rewrite safety` when a `url.<ssh-target>.insteadOf` rule rewrites the fetched HTTPS URL to SSH. The `http.extraHeader` URL-match probe now runs only for HTTP(S) effective URLs, because Git rejects SCP-style targets such as `git@github.com:owner/repo`. (#2906)
 
 ### Security
 
