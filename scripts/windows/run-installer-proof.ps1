@@ -13,6 +13,8 @@ param(
     [string]$BaselineVersion,
     [string]$OutputDir = "windows-installer-proof",
     [switch]$SelfTestProcessCapture,
+    [string]$ValidateInstallerJUnit,
+    [int]$InstallerExitCode = 0,
     [string]$PythonExecutable = "python"
 )
 
@@ -348,6 +350,21 @@ function Invoke-NativeCase {
     return $result
 }
 
+function Read-InstallerOutcome {
+    param([string]$JUnitPath, [int]$ExitCode)
+    [xml]$report = Get-Content -LiteralPath $JUnitPath -Raw -ErrorAction Stop
+    $cases = @($report.SelectNodes("//testcase"))
+    $skipped = @($report.SelectNodes("//testcase/skipped")).Count
+    $failed = @($report.SelectNodes("//testcase/failure | //testcase/error")).Count
+    if ($cases.Count -eq 0 -or $skipped -ne 0) {
+        throw "Installer assertions did not execute completely: $($cases.Count) cases, $skipped skipped"
+    }
+    if ($ExitCode -eq 0 -and $failed -ne 0) {
+        throw "Installer exit code claimed success despite $failed failing JUnit cases"
+    }
+    return [ordered]@{ cases = $cases.Count; skipped = $skipped; failed = $failed }
+}
+
 function Invoke-InstallerPytest {
     param(
         [string]$Name,
@@ -367,6 +384,8 @@ function Invoke-InstallerPytest {
     )
     $result = Invoke-CapturedProcess -FilePath "uv" -Arguments $arguments `
         -Name "$Name installer pytest" -TimeoutSeconds 900 -Environment $InstallerEnvironment
+    $result.junit = Read-InstallerOutcome -JUnitPath (Join-Path $OutDir "junit-$Name.xml") `
+        -ExitCode $result.exit_code
     $result.stdout | Set-Content -LiteralPath (Join-Path $OutDir "$Name-stdout.log") -Encoding UTF8
     $result.stderr | Set-Content -LiteralPath (Join-Path $OutDir "$Name-stderr.log") -Encoding UTF8
     Write-JsonFile -Value $result -Path (Join-Path $OutDir "$Name-result.json")
@@ -405,6 +424,12 @@ function Invoke-ProcessCaptureSelfTest {
     }
 }
 
+if ($ValidateInstallerJUnit) {
+    Read-InstallerOutcome -JUnitPath $ValidateInstallerJUnit -ExitCode $InstallerExitCode |
+        ConvertTo-Json
+    exit 0
+}
+
 if ($SelfTestProcessCapture) {
     Invoke-ProcessCaptureSelfTest -OutDir $OutputDir -Python $PythonExecutable
     exit 0
@@ -434,8 +459,14 @@ if ((Get-Sha256Hex -Path $BaselineArchive) -cne $baselineSha) {
     throw "Baseline archive hash does not match sidecar"
 }
 
+$resolvedTemp = Invoke-CapturedProcess -FilePath "python" -Arguments @(
+    "-c", "import os; print(os.path.realpath(os.environ['TEMP']))"
+) -Name "Resolve actual long TEMP path"
+if ($resolvedTemp.timed_out -or $resolvedTemp.exit_code -ne 0) {
+    throw "Could not resolve the actual Windows TEMP path"
+}
 $longChild = "wp-" + [System.Guid]::NewGuid().ToString("N").Substring(0, 5)
-$longBaseTemp = Join-Path (Join-Path $env:TEMP ("pytest-of-" + $env:USERNAME)) $longChild
+$longBaseTemp = Join-Path (Join-Path $resolvedTemp.stdout.Trim() ("pytest-of-" + $env:USERNAME)) $longChild
 $shortBaseTemp = Join-Path $env:RUNNER_TEMP "apm-windows-installer"
 Invoke-PowerShellNativeStderrProbe -OutDir $OutputDir | Out-Null
 $longOwned = $false
@@ -458,6 +489,7 @@ try {
 }
 
 $installerEnvironment = @{
+    "APM_E2E_TESTS" = "1"
     "APM_CANDIDATE_ARCHIVE" = $CandidateArchive
     "APM_CANDIDATE_VERSION" = $candidateVersion
     "APM_CANDIDATE_SHA256" = $candidateSha
@@ -489,6 +521,8 @@ $summary = [ordered]@{
     long_root_timed_out = $longResult.timed_out
     short_root_exit_code = $shortResult.exit_code
     short_root_timed_out = $shortResult.timed_out
+    long_root_junit = $longResult.junit
+    short_root_junit = $shortResult.junit
     conclusion = if ($shortResult.exit_code -eq 0 -and $longResult.exit_code -ne 0) {
         "short-root-passed-long-root-failed"
     } elseif ($shortResult.exit_code -eq 0 -and $longResult.exit_code -eq 0) {

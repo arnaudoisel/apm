@@ -146,7 +146,7 @@ def test_windows_installer_proof_script_runs_same_archive_through_both_roots() -
     assert 'Invoke-InstallerPytest -Name "long-root"' in text
     assert 'Invoke-InstallerPytest -Name "short-root"' in text
     assert '"wp-" + [System.Guid]::NewGuid().ToString("N").Substring(0, 5)' in text
-    assert 'Join-Path $env:TEMP ("pytest-of-" + $env:USERNAME)' in text
+    assert 'Join-Path $resolvedTemp.stdout.Trim() ("pytest-of-" + $env:USERNAME)' in text
     assert 'Join-Path $env:RUNNER_TEMP "apm-windows-installer"' in text
     assert 'throw "RUNNER_TEMP is required; this proof is CI-only"' in text
     assert 'throw "TEMP is required to reproduce the Windows pytest default root"' in text
@@ -158,6 +158,8 @@ def test_windows_installer_proof_script_runs_same_archive_through_both_roots() -
     assert "APM Install Test & Edge " in text
     assert "if ($shortResult.timed_out -or $shortResult.exit_code -ne 0)" in text
     assert "exit $shortResult.exit_code" in text
+    assert '"APM_E2E_TESTS" = "1"' in text
+    assert "$result.junit = Read-InstallerOutcome" in text
 
 
 def test_windows_installer_proof_records_charset_paths_and_ps5_stderr_confound() -> None:
@@ -219,3 +221,44 @@ def test_windows_installer_proof_process_capture_selftest(tmp_path: Path) -> Non
     assert payload["exit23"]["exit_code"] == 23
     assert "selftest-exit23-stderr" in payload["exit23"]["stderr"]
     assert payload["timeout"]["timed_out"] is True
+
+
+@pytest.mark.parametrize(
+    ("cases", "exit_code", "accepted"),
+    [
+        ('<testcase name="installer"/>', 0, True),
+        ('<testcase name="installer"><skipped/></testcase>', 0, False),
+        ("", 0, False),
+        ('<testcase name="installer"><failure/></testcase>', 0, False),
+        ('<testcase name="installer"><failure/></testcase>', 1, True),
+    ],
+)
+def test_installer_outcome_requires_executed_cases(
+    tmp_path: Path, cases: str, exit_code: int, accepted: bool
+) -> None:
+    """A green pytest exit with skipped assertions is not an installer proof."""
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is not installed")
+    report = tmp_path / "junit.xml"
+    report.write_text(f"<testsuites><testsuite>{cases}</testsuite></testsuites>")
+    completed = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(PROOF_SCRIPT),
+            "-ValidateInstallerJUnit",
+            str(report),
+            "-InstallerExitCode",
+            str(exit_code),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert (completed.returncode == 0) is accepted, completed.stdout + completed.stderr
+    if accepted:
+        assert json.loads(completed.stdout)["skipped"] == 0
