@@ -59,10 +59,13 @@ jobs:
       - name: Guard baseline tooling SHA
         shell: bash
         run: |
-          if [ "${TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${TOOLING_SHA}" ]; then
-            echo "::error::TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
-            exit 1
-          fi
+          case "${TOOLING_SHA}" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *)
+              echo "::error::TOOLING_SHA must be a full 40-character lowercase hex commit."
+              exit 1
+              ;;
+          esac
 
       - name: Checkout sparse wall-clock tooling
         shell: bash
@@ -240,10 +243,13 @@ jobs:
 
       - name: Guard baseline tooling SHA
         run: |
-          if [ "${TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${TOOLING_SHA}" ]; then
-            echo "::error::TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
-            exit 1
-          fi
+          case "${TOOLING_SHA}" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *)
+              echo "::error::TOOLING_SHA must be a full 40-character lowercase hex commit."
+              exit 1
+              ;;
+          esac
 
       - name: Checkout sparse wall-clock tooling
         run: |
@@ -421,10 +427,13 @@ jobs:
 
       - name: Guard baseline tooling SHA
         run: |
-          if [ "${TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${TOOLING_SHA}" ]; then
-            echo "::error::TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
-            exit 1
-          fi
+          case "${TOOLING_SHA}" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *)
+              echo "::error::TOOLING_SHA must be a full 40-character lowercase hex commit."
+              exit 1
+              ;;
+          esac
 
       - name: Checkout sparse wall-clock tooling
         run: |
@@ -615,10 +624,13 @@ jobs:
       - name: Guard baseline tooling SHA
         shell: bash
         run: |
-          if [ "${TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${TOOLING_SHA}" ]; then
-            echo "::error::TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
-            exit 1
-          fi
+          case "${TOOLING_SHA}" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *)
+              echo "::error::TOOLING_SHA must be a full 40-character lowercase hex commit."
+              exit 1
+              ;;
+          esac
 
       - name: Checkout sparse wall-clock tooling
         shell: bash
@@ -1115,10 +1127,13 @@ jobs:
       - name: Guard baseline tooling SHA
         shell: bash
         run: |
-          if [ "${TOOLING_SHA}" = "PARENT_PROVIDED_TOOLING_SHA" ] || [ -z "${TOOLING_SHA}" ]; then
-            echo "::error::TOOLING_SHA must be replaced with the parent-provided tooling commit before this workflow is run."
-            exit 1
-          fi
+          case "${TOOLING_SHA}" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *)
+              echo "::error::TOOLING_SHA must be a full 40-character lowercase hex commit."
+              exit 1
+              ;;
+          esac
 
       - name: Checkout sparse wall-clock tooling
         shell: bash
