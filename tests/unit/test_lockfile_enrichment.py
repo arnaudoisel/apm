@@ -453,6 +453,43 @@ class TestFilterFilesByTarget:
 class TestFilterFilesByTargetList:
     """Tests for _filter_files_by_target with list targets."""
 
+    @pytest.mark.parametrize(
+        "target",
+        ["copilot", "vscode", ["copilot"], ["vscode"], ["copilot", "vscode"]],
+    )
+    def test_shared_skills_survive_without_cross_target_leakage(
+        self, target: str | list[str]
+    ) -> None:
+        """Copilot aliases and list targets retain only the shared skill subtree."""
+        from apm_cli.bundle.lockfile_enrichment import _filter_files_by_target
+
+        expected = [
+            ".github/agents/reviewer.agent.md",
+            ".github/instructions/style.instructions.md",
+            ".agents/skills/review/",
+            ".agents/skills/review/SKILL.md",
+            ".agents/skills/review/assets/rules.json",
+        ]
+        unrelated = [
+            ".agents/hooks/other-client.json",
+            ".agents/plugins/other/plugin.json",
+            ".agents/skills-extra/secret.txt",
+            ".agents/agents/other.md",
+            ".claude/settings.json",
+            ".cursor/hooks.json",
+        ]
+        assert _filter_files_by_target(expected + unrelated, target) == (expected, {})
+
+    @pytest.mark.parametrize("target", ["cursor", "gemini", "opencode"])
+    def test_other_default_profiles_retain_shared_skills(self, target: str) -> None:
+        """All default-prefix profiles honor primitive overrides, not just Copilot."""
+        from apm_cli.bundle.lockfile_enrichment import _filter_files_by_target
+
+        skill = ".agents/skills/review/assets/rules.json"
+        assert _filter_files_by_target(
+            [skill, ".agents/hooks/other.json", ".agents/plugins/other/plugin.json"], target
+        ) == ([skill], {})
+
     def test_list_claude_copilot_includes_both_prefixes(self):
         from apm_cli.bundle.lockfile_enrichment import _filter_files_by_target
 

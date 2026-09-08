@@ -2,7 +2,7 @@ name: Verify shared/apm.md matrix secret-stripping fix
 
 # Empirical proof for fixes in .github/workflows/shared/apm.md.
 #
-# Three job sets:
+# Four job sets:
 #
 #   A. prove-old-pattern-strips-output (regression sentinel)
 #      Replicates the pre-fix shape (PEM embedded in a job output). Asserts
@@ -34,6 +34,9 @@ name: Verify shared/apm.md matrix secret-stripping fix
 #            at runtime, so apm-action resolves '' || 'latest' and floats.
 #        (3) Drift guard (source of truth): the schema default's pack format
 #            must be detected by the pinned microsoft/apm-action ref.
+#      Retains the 0.28.0 default multi-bundle proof and independently checks
+#      the review panel's 0.30.0 copilot,agent-skills override: real install,
+#      archive and clean restore must preserve each required resource's bytes.
 #
 #   D. pack-format-consumer-compat (cross-repo drift guard)
 #      Proves the `apm pack --archive` default archive format (.zip) stays
@@ -538,6 +541,85 @@ jobs:
           test "$BUNDLES_RESTORED" = "2"
           test -n "$(find "$RESTORE_ROOT" -type f -print -quit)"
           echo "[+] APM 0.28 packed two explicit targets and restored both bundles."
+
+  c-apm-030-panel-compat:
+    name: C. APM 0.30 review panel skill roundtrip
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # No checkout: installed and restored files cannot be confused with
+      # the repository's committed deployment tree. Match the production
+      # dependency and per-consumer override, not the shared 0.28.0 default.
+      - name: Pack real review panel with APM 0.30
+        id: pack-panel
+        uses: microsoft/apm-action@d723bb64ed70c135bbaf87d126b721dd2dae0439 # v1.10.0
+        with:
+          dependencies: |
+            - microsoft/apm#main
+          isolated: 'true'
+          pack: 'true'
+          archive: 'true'
+          target: copilot,agent-skills
+          apm-version: '0.30.0'
+          working-directory: ${{ runner.temp }}/apm-030-panel-pack
+
+      - name: Require a fresh panel restore destination
+        env:
+          RESTORE_ROOT: ${{ runner.temp }}/apm-030-panel-restore
+        run: |
+          set -euo pipefail
+          test ! -e "$RESTORE_ROOT"
+
+      - name: Restore review panel bundle with APM 0.30
+        uses: microsoft/apm-action@d723bb64ed70c135bbaf87d126b721dd2dae0439 # v1.10.0
+        with:
+          apm-version: '0.30.0'
+          bundle: ${{ steps.pack-panel.outputs.bundle-path }}
+          working-directory: ${{ runner.temp }}/apm-030-panel-restore
+
+      - name: Compare installed, archived, and restored panel bytes
+        shell: python
+        env:
+          PACK_ROOT: ${{ runner.temp }}/apm-030-panel-pack
+          BUNDLE: ${{ steps.pack-panel.outputs.bundle-path }}
+          RESTORE_ROOT: ${{ runner.temp }}/apm-030-panel-restore
+        run: |
+          import os
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          # Read only the four required skill/resource files, not persona
+          # definitions. A nonempty .github tree alone missed this regression.
+          required = (
+              "SKILL.md",
+              "assets/panelist-return-schema.json",
+              "assets/ceo-return-schema.json",
+              "assets/recommendation-template.md",
+          )
+          skill = Path(".agents/skills/apm-review-panel")
+          with ZipFile(os.environ["BUNDLE"]) as archive:
+              names = archive.namelist()
+              markers = [
+                  name for name in names
+                  if name.count("/") == 1 and name.endswith("/apm.lock.yaml")
+              ]
+              assert len(markers) == 1, "Expected one APM bundle wrapper"
+              wrapper = markers[0].split("/")[0]
+              for resource in required:
+                  deployed = skill / resource
+                  installed = Path(os.environ["PACK_ROOT"]) / deployed
+                  restored = Path(os.environ["RESTORE_ROOT"]) / deployed
+                  assert installed.is_file(), f"Not installed: {deployed}"
+                  expected = installed.read_bytes()
+                  assert expected, f"Empty installed resource: {deployed}"
+                  member = f"{wrapper}/{deployed.as_posix()}"
+                  assert names.count(member) == 1, f"Missing or duplicate archive entry: {deployed}"
+                  assert archive.read(member) == expected, f"Archive bytes differ: {deployed}"
+                  assert restored.is_file(), f"Not restored: {deployed}"
+                  assert restored.read_bytes() == expected, f"Restored bytes differ: {deployed}"
+          print("[+] 4 review panel files survived install, pack, and restore byte-for-byte.")
 
   # =====================================================================
   # Job set D: apm pack archive-format <-> apm-action consumer detection.

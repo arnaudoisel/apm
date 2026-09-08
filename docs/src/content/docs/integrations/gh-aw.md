@@ -93,6 +93,16 @@ imports:
 
 Use a bare semver tag (e.g. `'0.28.0'`). Pass `'latest'` to opt into floating to the newest release; omit the input entirely to keep the workflow's pinned default.
 
+:::caution[Temporary Copilot skill-bundle workaround]
+APM 0.30.0 still omits `.agents/skills/` under `--format apm --target copilot`. Only target-filtered legacy APM packaging is affected, not target-agnostic plugin formats. The PR review panel temporarily sets `apm-version: '0.30.0'` and `target: 'copilot,agent-skills'`; the shared default remains 0.28.0.
+
+Change the source workflow import, then run `gh aw compile` so the generated `.lock.yml` upgrades both pack and restore. Do not hand-edit generated locks or use `apm self-update`. Before agent launch, the workflow checks restored `.agents/skills/apm-review-panel/SKILL.md` and its three required assets.
+
+After these changes merge into trusted `main`, maintainers must start a fresh `workflow_dispatch` for PR #2741 and verify an actual recommendation. Re-running an old run does not validate the new workflow.
+
+The permanent fix is not yet published. Keep `agent-skills` until you pin a release containing that fix and recompile.
+:::
+
 Copies vendored before this change default to APM 0.21.0, the repository's current CLI line when that default was selected. If a copy's `apm-action pin:` line reads `v1.4.2`, its target input applies only to packing and does not reach the isolated install. To migrate:
 
 1. Replace `.github/workflows/shared/apm.md` with the [canonical file](https://github.com/microsoft/apm/blob/main/.github/workflows/shared/apm.md). This also moves the default to the compatibility-tested 0.28.0.

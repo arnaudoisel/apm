@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from apm_cli.core.target_catalog import (
     TARGET_CAPABILITIES,
@@ -247,10 +247,9 @@ class TargetProfile:
     pack_prefixes: tuple[str, ...] = ()
     """Path prefixes that identify this target's deployed files when packing.
 
-    When empty, ``bundle.lockfile_enrichment`` derives ``(f"{root_dir}/",)``
-    from :attr:`root_dir`.  Override only when the target deploys to multiple
-    top-level directories (e.g. Codex deploys both ``.codex/`` and
-    ``.agents/``).
+    When empty, :attr:`effective_pack_prefixes` derives the target root plus
+    any overridden primitive directories. Explicit prefixes remain authoritative
+    for targets that need a custom packing surface.
     """
 
     hooks_config_display: str | None = None
@@ -300,10 +299,19 @@ class TargetProfile:
     def effective_pack_prefixes(self) -> tuple[str, ...]:
         """Return the path prefixes used by pack-time file filtering.
 
-        Falls back to ``(self.prefix,)`` when :attr:`pack_prefixes` is empty,
-        so most targets need not override the field explicitly.
+        Default prefixes cover the root and each overridden primitive directory,
+        not its entire shared root (which may contain another client's hooks or
+        plugins). Explicit :attr:`pack_prefixes` retain their configured semantics.
         """
-        return self.pack_prefixes if self.pack_prefixes else (self.prefix,)
+        if self.pack_prefixes:
+            return self.pack_prefixes
+        prefixes = {self.prefix: None}
+        for mapping in self.primitives.values():
+            if mapping.deploy_root is not None:
+                prefix = f"{(PurePosixPath(mapping.deploy_root) / mapping.subdir).as_posix()}/"
+                if not prefix.startswith(self.prefix):
+                    prefixes[prefix] = None
+        return tuple(prefixes)
 
     def supports(self, primitive: str) -> bool:
         """Return ``True`` if this target accepts *primitive*."""

@@ -87,9 +87,35 @@ permissions:
 imports:
   - uses: shared/apm.md
     with:
-      target: copilot
+      apm-version: '0.30.0'
+      # Temporary workaround: 0.30 installs Copilot skills under .agents,
+      # but sole-target copilot packing omits that tree. Keep the shared
+      # default unchanged; remove agent-skills after the pack fix ships.
+      target: copilot,agent-skills
       packages:
         - microsoft/apm#main
+
+# Fail before inference if the trusted bundle lost the panel or its resources.
+# This hook runs after shared/apm.md's restore and framework initialization.
+# Only inspect file metadata here; never execute bundled scripts or fetch PR head.
+pre-agent-steps:
+  - name: Verify restored review panel skill and resources
+    shell: bash
+    run: |
+      set -euo pipefail
+      cd "$GITHUB_WORKSPACE"
+      skill=.agents/skills/apm-review-panel
+      for resource in \
+        SKILL.md \
+        assets/panelist-return-schema.json \
+        assets/ceo-return-schema.json \
+        assets/recommendation-template.md
+      do
+        if [ ! -f "$skill/$resource" ] || [ ! -s "$skill/$resource" ]; then
+          echo "::error::Missing or empty required review panel file: $skill/$resource. Check the APM install/pack/restore bundle before retrying."
+          exit 1
+        fi
+      done
 
 tools:
   github:

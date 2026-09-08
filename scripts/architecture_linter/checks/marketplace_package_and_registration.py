@@ -7,6 +7,7 @@ guard recorded in ``.apm/architecture/owners/install-deployment.json``.
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Iterable
 
@@ -271,11 +272,12 @@ _RID_BUNDLE_LAYOUT = "install-deployment-bundle-native-layout"
 _PLUGIN_LAYOUT = "src/apm_cli/bundle/plugin_layout.py"
 _LOCAL_BUNDLE_PATHS = "src/apm_cli/install/local_bundle_paths.py"
 _INSTALL_SERVICES = "src/apm_cli/install/services.py"
+_PACK_ENRICHMENT = "src/apm_cli/bundle/lockfile_enrichment.py"
 _TARGET_NAME_COMPARISON = re.compile(r"\btarget\.name\s*(?:==|!=)|(?:==|!=)\s*target\.name\b")
 
 
 def _check_bundle_native_layout(provider: FactsProvider) -> tuple[Violation, ...]:
-    """Local-bundle layout lowering must stay target-profile driven."""
+    """Bundle layout lowering and pack eligibility stay target-profile driven."""
     inv = frozenset(provider.inventory)
     findings: list[Violation] = []
     findings.extend(
@@ -322,6 +324,37 @@ def _check_bundle_native_layout(provider: FactsProvider) -> tuple[Violation, ...
                         path,
                         "Local bundle lowering must not branch on target.name; use TargetProfile.primitives",
                         line=number,
+                    )
+                )
+    facts, failures = checked_facts(
+        provider, _PACK_ENRICHMENT, _RID_BUNDLE_LAYOUT, require_python=True
+    )
+    findings.extend(failures)
+    if not failures and facts.tree_index is not None:
+        for name in ("_all_target_prefixes", "_get_target_prefixes"):
+            function = facts.tree_index.function(name)
+            nodes = facts.tree_index.own_scope(function) if function is not None else ()
+            attributes = {node.attr for node in nodes if isinstance(node, ast.Attribute)}
+            hardcoded_prefix = any(
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and re.fullmatch(r"\.[^\s]+/", node.value)
+                for node in nodes
+            )
+            if (
+                "effective_pack_prefixes" not in attributes
+                or hardcoded_prefix
+                or attributes.intersection(
+                    {"prefix", "root_dir", "deploy_root", "subdir", "pack_prefixes", "primitives"}
+                )
+            ):
+                findings.append(
+                    violation(
+                        _RID_BUNDLE_LAYOUT,
+                        _PACK_ENRICHMENT,
+                        f"{name} must consume TargetProfile.effective_pack_prefixes, "
+                        "not re-derive pack eligibility from target roots or primitives",
+                        line=getattr(function, "lineno", 1),
                     )
                 )
     return tuple(findings)
@@ -454,7 +487,7 @@ RULES: tuple[Rule, ...] = (
         id=_RID_BUNDLE_LAYOUT,
         group=GROUP,
         guard_ids=(_RID_BUNDLE_LAYOUT,),
-        description="Local bundle layout lowering stays owned by bundle/plugin_layout.py.",
+        description="Bundle layout and pack eligibility route through plugin_layout and TargetProfile.",
         check=_check_bundle_native_layout,
     ),
     Rule(

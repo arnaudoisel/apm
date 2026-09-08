@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,14 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 SHARED_APM = ROOT / ".github" / "workflows" / "shared" / "apm.md"
 VERIFY_SHARED_APM = ROOT / ".github" / "workflows" / "verify-shared-apm-matrix.yml"
+REVIEW_PANEL = ROOT / ".github" / "workflows" / "pr-review-panel.md"
+PANEL_GATE_NAME = "Verify restored review panel skill and resources"
+PANEL_FILES = (
+    "SKILL.md",
+    "assets/panelist-return-schema.json",
+    "assets/ceo-return-schema.json",
+    "assets/recommendation-template.md",
+)
 GH_AW_GUIDE = ROOT / "docs" / "src" / "content" / "docs" / "integrations" / "gh-aw.md"
 GH_AW_ACTIONS_LOCK = ROOT / ".github" / "aw" / "actions-lock.json"
 GH_AW_MAINTENANCE = ROOT / ".github" / "workflows" / "agentics-maintenance.yml"
@@ -80,8 +89,8 @@ _JOB_CREDENTIAL_ENV = {
 }
 
 
-def _frontmatter() -> dict:
-    source = SHARED_APM.read_text(encoding="utf-8")
+def _frontmatter(path: Path = SHARED_APM) -> dict:
+    source = path.read_text(encoding="utf-8")
     _prefix, frontmatter, _body = source.split("---", 2)
     loaded = yaml.safe_load(frontmatter)
     assert isinstance(loaded, dict)
@@ -362,6 +371,204 @@ def test_verify_workflow_exercises_apm_028_pack_and_multibundle_restore() -> Non
     assert restore["id"] == "restore"
     assert restore["with"]["bundles-file"] == "${{ steps.bundle-list.outputs.path }}"
     assert "steps.restore.outputs.bundles-restored" in VERIFY_SHARED_APM.read_text(encoding="utf-8")
+
+
+def test_review_panel_pins_temporary_skills_pack_workaround() -> None:
+    imported = next(
+        entry for entry in _frontmatter(REVIEW_PANEL)["imports"] if entry["uses"] == "shared/apm.md"
+    )
+    assert imported["with"] == {
+        "apm-version": "0.30.0",
+        "target": "copilot,agent-skills",
+        "packages": ["microsoft/apm#main"],
+    }
+    assert _frontmatter()["import-schema"]["apm-version"]["default"] == DEFAULT_APM_VERSION
+
+
+def _panel_gate(compiled: bool = False) -> dict:
+    if compiled:
+        lock = yaml.safe_load(REVIEW_PANEL.with_suffix(".lock.yml").read_text(encoding="utf-8"))
+        steps = lock["jobs"]["agent"]["steps"]
+    else:
+        steps = _frontmatter(REVIEW_PANEL)["pre-agent-steps"]
+    return next(step for step in steps if step.get("name") == PANEL_GATE_NAME)
+
+
+def test_review_panel_gate_runs_after_restore_before_agent_execution() -> None:
+    lock = yaml.safe_load(REVIEW_PANEL.with_suffix(".lock.yml").read_text(encoding="utf-8"))
+    steps = lock["jobs"]["agent"]["steps"]
+    names = [step.get("name") for step in steps]
+    assert names.count(PANEL_GATE_NAME) == 1
+    assert (
+        names.index("Restore APM packages (all bundles)")
+        < names.index(PANEL_GATE_NAME)
+        < names.index("Execute GitHub Copilot CLI")
+    )
+    gate = _panel_gate(compiled=True)
+    assert gate == _panel_gate()
+    assert gate["shell"] == "bash"
+    assert "if" not in gate
+    assert "continue-on-error" not in gate
+
+
+@pytest.mark.parametrize("compiled", [False, True], ids=["source", "lock"])
+@pytest.mark.parametrize("required_file", PANEL_FILES)
+@pytest.mark.parametrize("defect", ["absent", "empty", "directory"])
+def test_review_panel_gate_rejects_incomplete_payload(
+    tmp_path: Path, compiled: bool, required_file: str, defect: str
+) -> None:
+    skill = tmp_path / ".agents" / "skills" / "apm-review-panel"
+    for relative in PANEL_FILES:
+        path = skill / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"fixture: {relative}\n", encoding="utf-8")
+    broken = skill / required_file
+    broken.unlink()
+    if defect == "empty":
+        broken.touch()
+    elif defect == "directory":
+        broken.mkdir()
+
+    result = _run_bash(_panel_gate(compiled)["run"], env={"GITHUB_WORKSPACE": tmp_path.as_posix()})
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert f".agents/skills/apm-review-panel/{required_file}" in result.stdout
+    assert "::error::" in result.stdout
+
+
+@pytest.mark.parametrize("compiled", [False, True], ids=["source", "lock"])
+def test_review_panel_gate_accepts_complete_payload(tmp_path: Path, compiled: bool) -> None:
+    skill = tmp_path / ".agents" / "skills" / "apm-review-panel"
+    for relative in PANEL_FILES:
+        path = skill / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"fixture: {relative}\n".encode())
+
+    result = _run_bash(_panel_gate(compiled)["run"], env={"GITHUB_WORKSPACE": tmp_path.as_posix()})
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _panel_compat_job() -> dict:
+    workflow = yaml.safe_load(VERIFY_SHARED_APM.read_text(encoding="utf-8"))
+    return workflow["jobs"]["c-apm-030-panel-compat"]
+
+
+def test_verify_workflow_roundtrips_real_panel_without_checkout_or_secrets() -> None:
+    workflow = yaml.safe_load(VERIFY_SHARED_APM.read_text(encoding="utf-8"))
+    job = _panel_compat_job()
+    assert workflow["permissions"] == {"contents": "read"}
+    assert job["permissions"] == {"contents": "read"}
+    assert job["timeout-minutes"] == 10
+    steps = job["steps"]
+    actions = [step for step in steps if "uses" in step]
+    assert len(actions) == 2
+    assert {step["uses"] for step in actions} == {f"microsoft/apm-action@{APM_ACTION_SHA}"}
+    pack, restore = actions
+    assert pack["with"] == {
+        "apm-version": "0.30.0",
+        "dependencies": "- microsoft/apm#main\n",
+        "target": "copilot,agent-skills",
+        "isolated": "true",
+        "pack": "true",
+        "archive": "true",
+        "working-directory": "${{ runner.temp }}/apm-030-panel-pack",
+    }
+    assert restore["with"] == {
+        "apm-version": "0.30.0",
+        "bundle": "${{ steps.pack-panel.outputs.bundle-path }}",
+        "working-directory": "${{ runner.temp }}/apm-030-panel-restore",
+    }
+    assert [step["name"] for step in steps] == [
+        "Pack real review panel with APM 0.30",
+        "Require a fresh panel restore destination",
+        "Restore review panel bundle with APM 0.30",
+        "Compare installed, archived, and restored panel bytes",
+    ]
+    assert "secrets." not in json.dumps(job)
+    assert steps[-1]["shell"] == "python"
+    assert steps[-1]["env"] == {
+        "PACK_ROOT": "${{ runner.temp }}/apm-030-panel-pack",
+        "BUNDLE": "${{ steps.pack-panel.outputs.bundle-path }}",
+        "RESTORE_ROOT": "${{ runner.temp }}/apm-030-panel-restore",
+    }
+
+
+@pytest.mark.parametrize("existing_destination", [False, True])
+def test_panel_compat_requires_an_unpopulated_restore_destination(
+    tmp_path: Path, existing_destination: bool
+) -> None:
+    destination = tmp_path / "restore"
+    if existing_destination:
+        destination.mkdir()
+    step = _panel_compat_job()["steps"][1]
+    assert step["env"] == {"RESTORE_ROOT": "${{ runner.temp }}/apm-030-panel-restore"}
+
+    result = _run_bash(step["run"], env={"RESTORE_ROOT": destination.as_posix()})
+
+    assert result.returncode == int(existing_destination), result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("stage", "defect", "required_file"),
+    [
+        (stage, defect, relative)
+        for stage in ("archive", "restore")
+        for defect in ("absent", "empty", "changed")
+        for relative in PANEL_FILES
+    ]
+    + [(None, None, None)],
+)
+def test_panel_compat_checks_exact_resource_bytes(
+    tmp_path: Path, stage: str | None, defect: str | None, required_file: str | None
+) -> None:
+    pack_root, restore_root = tmp_path / "pack", tmp_path / "restore"
+    bundle = tmp_path / "panel.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("panel-1.0.0/apm.lock.yaml", "lockfile_version: '1'\n")
+        for relative in PANEL_FILES:
+            deployed = Path(".agents/skills/apm-review-panel") / relative
+            expected = f"real-panel-fixture: {relative}\n".encode()
+            for root in (pack_root, restore_root):
+                path = root / deployed
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(expected)
+            damaged = b"" if defect == "empty" else b"not the installed resource\n"
+            if stage == "restore" and relative == required_file:
+                path = restore_root / deployed
+                path.unlink()
+                if defect != "absent":
+                    path.write_bytes(damaged)
+            if stage == "archive" and relative == required_file:
+                if defect != "absent":
+                    archive.writestr(f"panel-1.0.0/{deployed.as_posix()}", damaged)
+            else:
+                archive.writestr(f"panel-1.0.0/{deployed.as_posix()}", expected)
+
+    step = _panel_compat_job()["steps"][-1]
+    result = subprocess.run(
+        (sys.executable, "-c", step["run"]),
+        env={
+            **os.environ,
+            "PACK_ROOT": str(pack_root),
+            "RESTORE_ROOT": str(restore_root),
+            "BUNDLE": str(bundle),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    if stage is None:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (
+            "4 review panel files survived install, pack, and restore byte-for-byte"
+            in result.stdout
+        )
+    else:
+        assert result.returncode != 0
+        assert required_file in result.stdout + result.stderr
 
 
 def test_shared_apm_fallback_token_has_current_repo_read_only() -> None:
@@ -711,8 +918,10 @@ def test_compiled_consumer_locks_carry_target_validation() -> None:
         assert compiled["jobs"]["apm"]["permissions"] == {"contents": "read"}
 
 
-def test_compiled_consumers_pin_the_shared_runtime_default() -> None:
-    for path, _imported in _shared_apm_consumers():
+def test_compiled_consumers_pin_their_effective_runtime_version() -> None:
+    for path, imported in _shared_apm_consumers():
+        expected_version = imported.get("with", {}).get("apm-version", DEFAULT_APM_VERSION)
+        assert re.fullmatch(r"\d+\.\d+\.\d+", expected_version), path.name
         lock = yaml.safe_load(path.with_suffix(".lock.yml").read_text(encoding="utf-8"))
         action_steps = [
             step
@@ -721,9 +930,11 @@ def test_compiled_consumers_pin_the_shared_runtime_default() -> None:
             if step.get("uses") == f"microsoft/apm-action@{APM_ACTION_SHA}"
         ]
         assert len(action_steps) == 2, path.name
-        assert {step["with"]["apm-version"] for step in action_steps} == {DEFAULT_APM_VERSION}, (
+        assert {step["with"]["apm-version"] for step in action_steps} == {expected_version}, (
             path.name
         )
+        pack = next(step for step in action_steps if step["with"].get("pack") == "true")
+        assert pack["with"]["target"] == imported["with"]["target"], path.name
 
 
 def test_repository_pins_exact_gh_aw_compiler_and_generated_locks() -> None:

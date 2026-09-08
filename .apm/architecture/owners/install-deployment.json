@@ -73,11 +73,12 @@
     },
     {
       "id": "bundle-native-layout-lowering",
-      "decision": "Bundle-native directory and filename lowering to APM primitive kinds and target deploy layout",
-      "owner": "bundle/plugin_layout.py (PLUGIN_LAYOUT, plugin_command_prompt_name) consumed by install/local_bundle_paths.py (_lower_to_target)",
+      "decision": "Bundle-native directory and filename lowering to APM primitive kinds, target deploy layout, and pack eligibility",
+      "owner": "bundle/plugin_layout.py (PLUGIN_LAYOUT, plugin_command_prompt_name) and integration/targets.py (TargetProfile) consumed by install/local_bundle_paths.py and bundle/lockfile_enrichment.py",
       "selectors": [
         "src/apm_cli/bundle/plugin_layout.py",
-        "src/apm_cli/install/local_bundle_paths.py"
+        "src/apm_cli/install/local_bundle_paths.py",
+        "src/apm_cli/bundle/lockfile_enrichment.py"
       ],
       "guards": ["install-deployment-bundle-native-layout"]
     },

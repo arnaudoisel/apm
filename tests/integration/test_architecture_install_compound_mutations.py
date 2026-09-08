@@ -38,8 +38,39 @@ UNINSTALL_RULE = "install-deployment-uninstall-selection"
 REPLACEMENT_RULE = "install-deployment-resolution-replacement"
 TARGET_RULE = "install-deployment-package-target-authorization"
 REQUEST_DEFAULTS_RULE = "install-deployment-request-defaults"
+BUNDLE_LAYOUT_RULE = "install-deployment-bundle-native-layout"
 
 MUTATIONS: tuple[CompoundMutation, ...] = (
+    *(
+        CompoundMutation(
+            f"pack-prefix-owner-{name}",
+            BUNDLE_LAYOUT_RULE,
+            "src/apm_cli/bundle/lockfile_enrichment.py",
+            _replace(old, new),
+        )
+        for name, old, new in (
+            (
+                "all-targets",
+                "for prefix in profile.effective_pack_prefixes:",
+                "for prefix in (profile.prefix,):",
+            ),
+            (
+                "named-target",
+                "return list(profile.effective_pack_prefixes)",
+                "return [profile.prefix]",
+            ),
+            (
+                "alias-target",
+                'return list(KNOWN_TARGETS["copilot"].effective_pack_prefixes)',
+                'return [KNOWN_TARGETS["copilot"].prefix]',
+            ),
+            (
+                "hardcoded-target",
+                "return list(profile.effective_pack_prefixes)",
+                'return [".github/"]',
+            ),
+        )
+    ),
     CompoundMutation(
         "target-owner-ignores-nested-mask",
         TARGET_RULE,

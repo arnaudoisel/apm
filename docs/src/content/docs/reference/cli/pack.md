@@ -22,7 +22,7 @@ apm pack [OPTIONS]
 
 The bundle is built from `apm.lock.yaml`. An enriched copy of the lockfile (per-file SHA-256 in `bundle_files`, plus `pack:` metadata) is embedded inside the bundle so `apm install <bundle>` can verify integrity at install time.
 
-Bundles are target-agnostic. The consumer's project decides where files land at install time -- the bundle carries no harness binding. Flags whose scope does not match the detected outputs are silent no-ops, not errors, so the same `apm pack` invocation works in CI across projects that produce only a bundle, only a marketplace, or both.
+Plugin bundles are target-agnostic. The consumer's project decides where files land at install time -- the bundle carries no harness binding. Legacy `--format apm` packaging filters paths by target; see the [gh-aw workaround](../../../integrations/gh-aw/) for omitted Copilot skills. Flags whose scope does not match the detected outputs are silent no-ops, not errors, so the same `apm pack` invocation works in CI across projects that produce only a bundle, only a marketplace, or both.
 
 ## Options
 
@@ -45,7 +45,7 @@ Bundles are target-agnostic. The consumer's project decides where files land at 
 | `--check-versions` | off | Release gate: verify per-package versions agree with the configured `marketplace.versioning.strategy` (`lockstep`, `tag_pattern`, or `per_package`). Exits `3` on misalignment. Composes with `--check-clean` and `--dry-run`. |
 | `--check-clean` | off | Read-only release gate: regenerate every configured marketplace output in memory and diff against the same effective path used by `apm pack`, including `--marketplace-path` overrides. Exits `4` for drift or uncertifiable remote Claude metadata. It automatically suppresses normal pack writes. |
 | `--strict-metadata` | off | Claude marketplace: fail before writing when remote package metadata cannot be fetched. Use it in publishing CI to require those fetches to succeed. Exits `5` before `--check-clean` runs when both flags are present. |
-| `--target`, `-t VALUE` | auto-detect | **Deprecated.** Recorded as informational `pack.target` metadata only; ignored by `apm install`. Will be removed in a future release. |
+| `--target`, `-t VALUE` | auto-detect | **Deprecated.** Filters paths for legacy `--format apm` bundles; plugin formats remain target-agnostic. Recorded as informational `pack.target` metadata; ignored by `apm install`. |
 
 :::caution[Migrating automation from `.tar.gz`?]
 `apm pack --archive` now produces `.zip`. If your CI release, checksum, or

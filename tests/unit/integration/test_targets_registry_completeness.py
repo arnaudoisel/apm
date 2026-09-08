@@ -13,6 +13,8 @@ so that failures pinpoint the exact entry that drifted.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from apm_cli.adapters.client.antigravity import AntigravityClientAdapter
@@ -28,7 +30,7 @@ from apm_cli.adapters.client.kiro import KiroClientAdapter
 from apm_cli.adapters.client.opencode import OpenCodeClientAdapter
 from apm_cli.adapters.client.vscode import VSCodeClientAdapter
 from apm_cli.adapters.client.windsurf import WindsurfClientAdapter
-from apm_cli.integration.targets import KNOWN_TARGETS, TargetProfile
+from apm_cli.integration.targets import KNOWN_TARGETS, PrimitiveMapping, TargetProfile
 
 # Recognised values for ``TargetProfile.compile_family``.  Adding a new family
 # requires touching ``apm_cli.commands.compile.cli._resolve_compile_target``
@@ -70,9 +72,7 @@ _ADAPTER_CLASSES = (
 def test_pack_prefixes_are_resolvable(name: str, profile: TargetProfile) -> None:
     """Every target must yield a non-empty pack-prefix tuple.
 
-    ``effective_pack_prefixes`` falls back to ``(profile.prefix,)`` when
-    ``pack_prefixes`` is empty, so this test fails only when both the
-    field AND the fallback are degenerate.
+    Defaults include the target root and overridden primitive directories.
     """
     prefixes = profile.effective_pack_prefixes
     assert prefixes, f"target {name!r} has no pack prefixes"
@@ -84,6 +84,38 @@ def test_pack_prefixes_are_resolvable(name: str, profile: TargetProfile) -> None
             f"target {name!r} pack prefix {p!r} contains a backslash; "
             "pack prefixes are POSIX-style and must use forward slashes"
         )
+
+
+@pytest.mark.parametrize("name,profile", sorted(KNOWN_TARGETS.items()))
+def test_pack_prefixes_cover_primitive_deploy_roots(name: str, profile: TargetProfile) -> None:
+    """Every deployed primitive must survive its own target's pack filter."""
+    for mapping in profile.primitives.values():
+        directory = f"{mapping.deploy_root or profile.root_dir}/{mapping.subdir}".rstrip("/") + "/"
+        assert any(directory.startswith(prefix) for prefix in profile.effective_pack_prefixes), (
+            f"{name} drops deployed primitive directory {directory}"
+        )
+
+
+def test_default_pack_prefixes_derive_narrow_deduplicated_overrides() -> None:
+    """Derivation is generic, bounded to primitive dirs, and stable in order."""
+    profile = replace(
+        KNOWN_TARGETS["copilot"],
+        root_dir=".client",
+        primitives={
+            "skills": PrimitiveMapping("skills", "/SKILL.md", "skill_standard", ".shared"),
+            "other-skills": PrimitiveMapping("skills", "/SKILL.md", "skill_standard", ".shared"),
+            "agents": PrimitiveMapping("agents", ".md", "agent", ".client"),
+            "commands": PrimitiveMapping("commands", ".md", "command", ".extra/"),
+        },
+    )
+    assert profile.effective_pack_prefixes == (".client/", ".shared/skills/", ".extra/commands/")
+
+
+def test_explicit_pack_prefixes_remain_authoritative() -> None:
+    """Configured prefixes are not narrowed, reordered, or augmented."""
+    configured = (".legacy/", ".agents/")
+    profile = replace(KNOWN_TARGETS["copilot"], pack_prefixes=configured)
+    assert profile.effective_pack_prefixes == configured
 
 
 @pytest.mark.parametrize("name,profile", sorted(KNOWN_TARGETS.items()))
