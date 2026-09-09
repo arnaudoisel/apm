@@ -958,6 +958,29 @@ class TestGitSubprocessEnv:
         assert authorized is False
         probe.assert_not_called()
 
+    def test_malformed_rewrite_target_keeps_the_wrapped_safety_error(self, tmp_path) -> None:
+        env = {
+            "PATH": os.environ["PATH"],
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "http.extraheader",
+            "GIT_CONFIG_VALUE_0": "Authorization: Basic sentinel",
+            "GIT_CONFIG_KEY_1": "url.https://[::1/.insteadOf",
+            "GIT_CONFIG_VALUE_1": "https://git.example.com/",
+        }
+        with (
+            patch.dict(os.environ, {"PATH": os.environ["PATH"]}, clear=True),
+            patch(
+                "apm_cli.utils.git_env.subprocess.run",
+                side_effect=_run_real_git_config_and_fake_clone,
+            ),
+            pytest.raises(ValueError, match="Unable to verify Git URL rewrite safety"),
+        ):
+            clone_git_worktree(
+                "https://git.example.com/acme/repo",
+                tmp_path / "clone",
+                env=env,
+            )
+
     @pytest.mark.parametrize(
         ("replacement", "message"),
         (

@@ -598,7 +598,11 @@ def _has_applicable_http_authorization(
     env: dict[str, str],
 ) -> bool:
     """Ask Git which URL-scoped extra headers apply to one HTTP(S) remote."""
-    if urlsplit(remote_url).scheme.lower() not in {"http", "https"}:
+    try:
+        scheme = urlsplit(remote_url).scheme.lower()
+    except ValueError:
+        return False
+    if scheme not in {"http", "https"}:
         return False
     direct_header = env.get("GIT_HTTP_EXTRAHEADER", "")
     if _is_valid_http_extraheader_value(direct_header) and _is_credential_bearing_http_header(
