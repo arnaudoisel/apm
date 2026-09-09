@@ -134,11 +134,10 @@ _SCP_HOST_RE = re.compile(r"^(?:[^/@:\s]+@)?(\[[^\]]+\]|[^/:@\s]+):")
 _HTTP_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _GIT_CONFIG_PROBE_TIMEOUTS = (10, 30)
 
-_URL_REWRITE_RECOVERY = (
-    "inspect matching rules with "
-    "'git config --show-origin --get-regexp ^url\\..*\\.insteadOf$' "
-    "and remove the unsafe rule"
+_URL_REWRITE_INSPECTION = (
+    "inspect matching rules with 'git config --show-origin --get-regexp ^url\\..*\\.insteadOf$'"
 )
+_URL_REWRITE_RECOVERY = f"{_URL_REWRITE_INSPECTION} and remove the unsafe rule"
 
 
 class GitUrlRewriteError(ValueError):
@@ -159,7 +158,7 @@ class GitUrlRewriteProbeError(ValueError):
         self.category = category
         super().__init__(
             f"Unable to verify Git URL rewrite safety ({category}); "
-            f"check Git configuration and retry; {_URL_REWRITE_RECOVERY}"
+            f"check Git configuration and retry; {_URL_REWRITE_INSPECTION}"
         )
 
 

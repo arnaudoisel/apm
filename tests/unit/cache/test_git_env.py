@@ -342,6 +342,7 @@ class TestGitSubprocessEnv:
         assert "Git config probe failed" in message
         assert "check Git configuration and retry" in message
         assert "--show-origin" in message
+        assert "remove the unsafe rule" not in message
         assert "private config detail" not in message
 
     def test_rewrite_probe_retries_once_after_timeout(self) -> None:
@@ -957,6 +958,26 @@ class TestGitSubprocessEnv:
 
         assert authorized is False
         probe.assert_not_called()
+
+    def test_http_urlmatch_failure_reports_status_without_raw_config(self) -> None:
+        headers = (GitConfigEntry("command", "http.extraheader", "Authorization: Basic sentinel"),)
+        result = subprocess.CompletedProcess(
+            ["git", "config"],
+            128,
+            stdout=b"",
+            stderr=b"private config detail",
+        )
+        with (
+            patch("apm_cli.utils.git_env._git_config_run", return_value=result),
+            pytest.raises(GitUrlRewriteProbeError) as raised,
+        ):
+            git_url_has_authorization("https://git.example.com/acme/repo", headers)
+
+        message = str(raised.value)
+        assert "Git URL-match probe exited with status 128" in message
+        assert "check Git configuration and retry" in message
+        assert "remove the unsafe rule" not in message
+        assert "private config detail" not in message
 
     def test_malformed_rewrite_target_keeps_the_wrapped_safety_error(self, tmp_path) -> None:
         env = {
