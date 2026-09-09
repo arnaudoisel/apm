@@ -23,6 +23,7 @@ from apm_cli.utils.git_env import (
     git_remote_refs,
     git_subprocess_env,
     git_subprocess_error_text,
+    git_url_has_authorization,
     reset_git_cache,
     set_git_authorization_header,
 )
@@ -914,6 +915,68 @@ class TestGitSubprocessEnv:
         ):
             clone_git_worktree(
                 "git@git.example.com:acme/repo",
+                tmp_path / "clone",
+                env=env,
+            )
+
+    def test_clone_allows_scp_ssh_rewrite_while_a_header_is_injected(self, tmp_path) -> None:
+        env = {
+            "PATH": os.environ["PATH"],
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "http.extraheader",
+            "GIT_CONFIG_VALUE_0": "Authorization: Basic sentinel",
+            "GIT_CONFIG_KEY_1": "url.git@git.example.com:.insteadOf",
+            "GIT_CONFIG_VALUE_1": "https://git.example.com/",
+        }
+        with (
+            patch.dict(os.environ, {"PATH": os.environ["PATH"]}, clear=True),
+            patch(
+                "apm_cli.utils.git_env.subprocess.run",
+                side_effect=_run_real_git_config_and_fake_clone,
+            ) as run,
+        ):
+            clone_git_worktree(
+                "https://git.example.com/acme/repo",
+                tmp_path / "clone",
+                env=env,
+            )
+
+        argv = run.call_args_list[-1].args[0]
+        assert "clone" in argv
+        assert [urlsplit(arg).hostname for arg in argv if urlsplit(arg).scheme == "https"] == [
+            "git.example.com"
+        ]
+
+    def test_scp_ssh_url_reports_no_http_authorization_without_probing_git(self) -> None:
+        headers = (GitConfigEntry("command", "http.extraheader", "Authorization: Basic sentinel"),)
+        with patch(
+            "apm_cli.utils.git_env._git_config_run",
+            side_effect=AssertionError("the URL-match probe must not run for a non-HTTP URL"),
+        ) as probe:
+            authorized = git_url_has_authorization("git@git.example.com:acme/repo", headers)
+
+        assert authorized is False
+        probe.assert_not_called()
+
+    def test_malformed_rewrite_target_keeps_the_wrapped_safety_error(self, tmp_path) -> None:
+        env = {
+            "PATH": os.environ["PATH"],
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "http.extraheader",
+            "GIT_CONFIG_VALUE_0": "Authorization: Basic sentinel",
+            "GIT_CONFIG_KEY_1": "url.https://[::1/.insteadOf",
+            "GIT_CONFIG_VALUE_1": "https://git.example.com/",
+        }
+        with (
+            patch.dict(os.environ, {"PATH": os.environ["PATH"]}, clear=True),
+            patch(
+                "apm_cli.utils.git_env.subprocess.run",
+                side_effect=_run_real_git_config_and_fake_clone,
+            ),
+            pytest.raises(ValueError, match="Unable to verify Git URL rewrite safety"),
+        ):
+            clone_git_worktree(
+                "https://git.example.com/acme/repo",
                 tmp_path / "clone",
                 env=env,
             )
